@@ -13,6 +13,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createPlannerRoutes } from './api/routes.js'
 import { openPlannerDb, SchemaTooNewError } from './db/schema.js'
 import { createPlannerTools } from './tools.js'
+import type { JudgeChat } from './judge.js'
 
 const VERSION = '0.1.0'
 const PROMPT_BLOCK = 'plugin:planner'
@@ -26,10 +27,57 @@ export const name = 'planner'
  */
 export const inject = ['tools', 'webServer', 'systemPrompt']
 
+/** 语义评审配置；不配就等于关闭 Judge，只跑容量校验。 */
+export interface JudgeConfig {
+  /** 模型 provider，例如 `deepseek-official`。 */
+  provider: string
+  /** 模型 id。 */
+  model: string
+  /** 超时毫秒，默认 8000。 */
+  timeoutMs?: number
+  /** 最多保留多少条评审问题，默认 12。 */
+  maxIssues?: number
+}
+
 /** 插件配置。配置文件只放部署常量；容量等运行期偏好在数据库里。 */
 export interface Config {
   /** SQLite 路径；留空用 `~/.dsh/personal-planner/planner.sqlite`。 */
   dbPath?: string
+  /** 语义评审（可选）。缺省时 propose 只做容量校验。 */
+  judge?: JudgeConfig
+}
+
+/**
+ * 用 `ctx.llm.stream` 组装评审用的 chat 函数。
+ *
+ * 软探测：宿主没有 `llm` 服务时返回 undefined（评审关闭），绝不写进 inject——
+ * 那会让整个插件在缺 `llm` 的宿主上 pending。
+ * @param ctx - 插件上下文。
+ * @param judge - 评审配置。
+ * @returns 可用的 chat 函数，或 undefined。
+ */
+function makeJudgeChat(ctx: Context, judge: JudgeConfig): JudgeChat | undefined {
+  const llm = (ctx as unknown as { get?: (name: string) => unknown }).get?.('llm') as
+    | { stream?: (options: Record<string, unknown>) => AsyncIterable<Record<string, unknown>> }
+    | undefined
+  if (llm === undefined || typeof llm.stream !== 'function') return undefined
+  const stream = llm.stream.bind(llm)
+  return async (system, user, signal) => {
+    let text = ''
+    const chunks = stream({
+      provider: judge.provider,
+      model: judge.model,
+      system,
+      messages: [{ role: 'user', content: [{ type: 'text', text: user }] }],
+      signal,
+    })
+    for await (const chunk of chunks) {
+      if (chunk === null || typeof chunk !== 'object' || chunk.type !== 'text-delta') continue
+      if (typeof chunk.text === 'string') text += chunk.text
+      else if (typeof chunk.delta === 'string') text += chunk.delta
+    }
+    return text
+  }
 }
 
 /** ping 的响应体；Client 徽章也读同一份。 */
@@ -74,7 +122,20 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.effect(() => () => { db.close() }, 'planner: db')
 
   ctx.effect(() => {
-    const disposers = createPlannerTools(db).map((tool) => ctx.tools.register(tool))
+    const judge = config.judge
+    const judgeChat = judge === undefined ? undefined : makeJudgeChat(ctx, judge)
+    if (judge !== undefined && judgeChat === undefined) {
+      console.warn('[planner] 配置了 judge 但宿主没有 llm 服务，语义评审已关闭')
+    }
+    const toolOptions = judgeChat === undefined
+      ? {}
+      : {
+        judgeChat,
+        judgeModel: judge === undefined ? '' : `${judge.provider}/${judge.model}`,
+        ...(judge?.timeoutMs === undefined ? {} : { judgeTimeoutMs: judge.timeoutMs }),
+        ...(judge?.maxIssues === undefined ? {} : { judgeMaxIssues: judge.maxIssues }),
+      }
+    const disposers = createPlannerTools(db, toolOptions).map((tool) => ctx.tools.register(tool))
     disposers.push(ctx.tools.register(defineTool({
       name: 'planner_ping',
       description: 'Personal Planner 的连通性探针：确认 Host 半区已激活，返回版本与 Host 时钟。不读写任务数据。',

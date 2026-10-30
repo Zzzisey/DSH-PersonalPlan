@@ -24,8 +24,17 @@ import {
   updateDraftPayload,
   updateTasks,
 } from './db/repo.js'
+import { mergeVerdict, runJudge, type JudgeChat } from './judge.js'
 import { addDays, capacityBetween, checkCapacity, todayInShanghai, type PlanEntry } from './planning.js'
-import type { CapacityRules, DayLoad, DraftMode, Priority, Task, TaskStatus } from './types.js'
+import type { CapacityRules, DayLoad, DraftMode, Issue, Priority, Task, TaskStatus, Verdict } from './types.js'
+
+/** 工具层的可选依赖：目前只有语义评审。缺省时只跑容量校验。 */
+export interface PlannerToolOptions {
+  judgeChat?: JudgeChat
+  judgeModel?: string
+  judgeTimeoutMs?: number
+  judgeMaxIssues?: number
+}
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const PRIORITIES: readonly Priority[] = ['P0', 'P1', 'P2']
@@ -154,7 +163,7 @@ function payloadEntries(payload: DraftPayload): PlanEntry[] {
  * @param db - 已打开的连接；工具不自己开库。
  * @returns 可直接交给 `ctx.tools.register` 的定义数组。
  */
-export function createPlannerTools(db: DatabaseSync) {
+export function createPlannerTools(db: DatabaseSync, options: PlannerToolOptions = {}) {
   const goalCreate = defineTool({
     name: 'planner_goal_create',
     description:
@@ -221,16 +230,49 @@ export function createPlannerTools(db: DatabaseSync) {
         ? createDraft(db, { goalId, mode, payload })
         : updateDraftPayload(db, existing.id, payload)
 
-      const report = checkCapacity(payloadEntries(payload), getCapacity(db) as CapacityRules)
-      setDraftVerdict(db, draft.id, report.verdict)
+      const capacity = getCapacity(db) as CapacityRules
+      const report = checkCapacity(payloadEntries(payload), capacity)
       appendCheck(db, { kind: 'capacity', target: draft.id, verdict: report.verdict, issues: report.issues })
+
+      // 语义评审是可选增强：没配置模型就只跑容量，绝不因此拖慢或阻断 propose。
+      let judgeIssues: Issue[] = []
+      let judgeNote = ''
+      let verdict: Verdict = report.verdict
+      if (options.judgeChat !== undefined) {
+        const result = await runJudge(options.judgeChat, {
+          goal: { title: goal.title, motivation: goal.motivation, deadline: goal.deadline },
+          tasks: payloadEntries(payload).map((entry) => ({
+            title: entry.title,
+            day: entry.day ?? undefined,
+            estMinutes: entry.estMinutes,
+          })),
+          capacity: {
+            days: report.days.map((day) => ({ day: day.day, planned: day.planned, limit: day.limit })),
+            issues: report.issues,
+          },
+        }, {
+          ...(options.judgeTimeoutMs === undefined ? {} : { timeoutMs: options.judgeTimeoutMs }),
+          ...(options.judgeMaxIssues === undefined ? {} : { maxIssues: options.judgeMaxIssues }),
+        })
+        judgeIssues = result.issues
+        verdict = mergeVerdict(report.verdict, result.verdict)
+        appendCheck(db, {
+          kind: 'semantic',
+          target: draft.id,
+          verdict: result.verdict,
+          issues: result.issues,
+          ...(options.judgeModel === undefined ? {} : { model: options.judgeModel }),
+        })
+        if (result.note !== undefined) judgeNote = `\n语义评审：${result.note}（按未验证处理）`
+      }
+      setDraftVerdict(db, draft.id, verdict)
 
       const loads = report.days.length === 0 ? '容量：没有已排期的任务' : `容量：${report.days.map(formatDay).join('；')}`
       const unplanned = report.unplanned === 0 ? '' : `\n未排期：${report.unplanned} 个任务没有 day`
-      const action = report.verdict === 'fail'
+      const action = verdict === 'fail'
         ? '下一步：按上面的问题改这份提案（带同一个 draft_id 再调本工具），fail 不能提交。'
         : '下一步：让用户确认后调用 planner_plan_commit(draft_id="' + draft.id + '")；要改就带同样的 draft_id 重新 propose。'
-      return `提案已生成 ${draft.id}，结论 ${report.verdict}。\n${loads}${unplanned}\n${formatIssues(report.issues)}\n${action}`
+      return `提案已生成 ${draft.id}，结论 ${verdict}。\n${loads}${unplanned}\n${formatIssues([...report.issues, ...judgeIssues])}${judgeNote}\n${action}`
     },
   })
 
