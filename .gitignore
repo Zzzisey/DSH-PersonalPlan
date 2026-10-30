@@ -1,0 +1,16 @@
+# 依赖与构建产物
+node_modules/
+dist/
+*.tsbuildinfo
+.npm-cache/
+
+# 本地数据：真实任务库，绝不提交
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# 日志与系统文件
+logs/
+*.log
+.DS_Store
+Thumbs.db
