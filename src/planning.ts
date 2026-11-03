@@ -97,6 +97,41 @@ export function capacityBetween(from: string, to: string, rules: CapacityRules):
 }
 
 /**
+ * 目标级容量：截止日前还剩多少可用时间，够不够装下这个目标剩下的活。
+ *
+ * 日容量校验只能发现"某天超了"，发现不了"每天都排得下、但整体来不及"。
+ * @param input - 提案分钟数、已有未完成分钟数、截止日、今天、容量规则。
+ * @returns 一条 fail 级 issue，或 undefined（来得及 / 无截止日）。
+ */
+export function checkGoalCapacity(input: {
+  proposedMinutes: number
+  existingMinutes?: number
+  deadline: string | null
+  today: string
+  rules: CapacityRules
+}): Issue | undefined {
+  const { deadline, today, rules } = input
+  const total = input.proposedMinutes + (input.existingMinutes ?? 0)
+  if (deadline === null) return undefined
+  if (deadline < today) {
+    return total <= 0 ? undefined : {
+      kind: 'goal-over-capacity',
+      severity: 'fail',
+      message: `截止日期 ${deadline} 已经过去，但还有 ${total} 分钟未完成`,
+      suggestion: '把截止日期改到未来，或把剩余任务标为放弃',
+    }
+  }
+  const usable = capacityBetween(today, deadline, rules)
+  if (total <= usable) return undefined
+  return {
+    kind: 'goal-over-capacity',
+    severity: 'fail',
+    message: `目标剩余 ${total} 分钟（本次提案 ${input.proposedMinutes}${input.existingMinutes === undefined ? '' : ` + 已排 ${input.existingMinutes}`}），超过 ${today} 到 ${deadline} 的可用 ${usable} 分钟`,
+    suggestion: '砍掉次要任务或缩小范围；也可以把截止日期后移',
+  }
+}
+
+/**
  * 校验一组计划的日容量与粒度。
  *
  * 判定：任一日 `load > 1` 为 fail；`0.85 <= load <= 1` 为 warn；任务超过 120 分钟为 warn；

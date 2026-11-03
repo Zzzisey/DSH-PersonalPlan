@@ -25,7 +25,7 @@ import {
   updateTasks,
 } from './db/repo.js'
 import { mergeVerdict, runJudge, type JudgeChat } from './judge.js'
-import { addDays, capacityBetween, checkCapacity, todayInShanghai, type PlanEntry } from './planning.js'
+import { addDays, capacityBetween, checkCapacity, checkGoalCapacity, todayInShanghai, type PlanEntry } from './planning.js'
 import type { CapacityRules, DayLoad, DraftMode, Issue, Priority, Task, TaskStatus, Verdict } from './types.js'
 
 /** 工具层的可选依赖：目前只有语义评审。缺省时只跑容量校验。 */
@@ -231,31 +231,51 @@ export function createPlannerTools(db: DatabaseSync, options: PlannerToolOptions
         : updateDraftPayload(db, existing.id, payload)
 
       const capacity = getCapacity(db) as CapacityRules
-      const report = checkCapacity(payloadEntries(payload), capacity)
-      appendCheck(db, { kind: 'capacity', target: draft.id, verdict: report.verdict, issues: report.issues })
+      const entries = payloadEntries(payload)
+      const report = checkCapacity(entries, capacity)
+
+      // 目标级容量：日校验只看单天，这里补"整体来不来得及"。
+      const proposedMinutes = entries.reduce((sum, entry) => sum + entry.estMinutes, 0)
+      const existingMinutes = listTasks(db, { goalId, limit: 200 })
+        .filter((task) => task.status !== 'done' && task.status !== 'dropped')
+        .reduce((sum, task) => sum + task.estMinutes, 0)
+      const goalIssue = checkGoalCapacity({
+        proposedMinutes,
+        existingMinutes,
+        deadline: goal.deadline,
+        today: todayInShanghai(),
+        rules: capacity,
+      })
+      const capacityIssues = goalIssue === undefined ? report.issues : [...report.issues, goalIssue]
+      const capacityVerdict: Verdict = capacityIssues.some((issue) => issue.severity === 'fail')
+        ? 'fail'
+        : capacityIssues.some((issue) => issue.severity === 'warn')
+          ? 'warn'
+          : 'pass'
+      appendCheck(db, { kind: 'capacity', target: draft.id, verdict: capacityVerdict, issues: capacityIssues })
 
       // 语义评审是可选增强：没配置模型就只跑容量，绝不因此拖慢或阻断 propose。
       let judgeIssues: Issue[] = []
       let judgeNote = ''
-      let verdict: Verdict = report.verdict
+      let verdict: Verdict = capacityVerdict
       if (options.judgeChat !== undefined) {
         const result = await runJudge(options.judgeChat, {
           goal: { title: goal.title, motivation: goal.motivation, deadline: goal.deadline },
-          tasks: payloadEntries(payload).map((entry) => ({
+          tasks: entries.map((entry) => ({
             title: entry.title,
             day: entry.day ?? undefined,
             estMinutes: entry.estMinutes,
           })),
           capacity: {
             days: report.days.map((day) => ({ day: day.day, planned: day.planned, limit: day.limit })),
-            issues: report.issues,
+            issues: capacityIssues,
           },
         }, {
           ...(options.judgeTimeoutMs === undefined ? {} : { timeoutMs: options.judgeTimeoutMs }),
           ...(options.judgeMaxIssues === undefined ? {} : { maxIssues: options.judgeMaxIssues }),
         })
         judgeIssues = result.issues
-        verdict = mergeVerdict(report.verdict, result.verdict)
+        verdict = mergeVerdict(capacityVerdict, result.verdict)
         appendCheck(db, {
           kind: 'semantic',
           target: draft.id,
@@ -263,7 +283,12 @@ export function createPlannerTools(db: DatabaseSync, options: PlannerToolOptions
           issues: result.issues,
           ...(options.judgeModel === undefined ? {} : { model: options.judgeModel }),
         })
-        if (result.note !== undefined) judgeNote = `\n语义评审：${result.note}（按未验证处理）`
+        if (result.note !== undefined) {
+          const excerpt = result.raw.trim().slice(0, 200)
+          judgeNote = excerpt === ''
+            ? `\n语义评审：${result.note}（按未验证处理）· 模型输出为空`
+            : `\n语义评审：${result.note}（按未验证处理）· 原始输出：${excerpt}`
+        }
       }
       setDraftVerdict(db, draft.id, verdict)
 
@@ -272,7 +297,7 @@ export function createPlannerTools(db: DatabaseSync, options: PlannerToolOptions
       const action = verdict === 'fail'
         ? '下一步：按上面的问题改这份提案（带同一个 draft_id 再调本工具），fail 不能提交。'
         : '下一步：让用户确认后调用 planner_plan_commit(draft_id="' + draft.id + '")；要改就带同样的 draft_id 重新 propose。'
-      return `提案已生成 ${draft.id}，结论 ${verdict}。\n${loads}${unplanned}\n${formatIssues([...report.issues, ...judgeIssues])}${judgeNote}\n${action}`
+      return `提案已生成 ${draft.id}，结论 ${verdict}。\n${loads}${unplanned}\n${formatIssues([...capacityIssues, ...judgeIssues])}${judgeNote}\n${action}`
     },
   })
 

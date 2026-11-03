@@ -71,10 +71,18 @@ function makeJudgeChat(ctx: Context, judge: JudgeConfig): JudgeChat | undefined 
       messages: [{ role: 'user', content: [{ type: 'text', text: user }] }],
       signal,
     })
+    let finish = ''
     for await (const chunk of chunks) {
-      if (chunk === null || typeof chunk !== 'object' || chunk.type !== 'text-delta') continue
-      if (typeof chunk.text === 'string') text += chunk.text
-      else if (typeof chunk.delta === 'string') text += chunk.delta
+      if (chunk === null || typeof chunk !== 'object') continue
+      if (chunk.type === 'text-delta') {
+        if (typeof chunk.text === 'string') text += chunk.text
+        continue
+      }
+      if (chunk.type === 'finish') finish = String(chunk.reason ?? 'unknown')
+    }
+    if (text.trim() === '') {
+      // 空文本几乎总是流以非 stop 的原因结束：把原因带出去，别让它变成“无法解析”。
+      throw new Error(`模型未返回文本（finish=${finish === '' ? 'none' : finish}）`)
     }
     return text
   }

@@ -44,6 +44,7 @@ export interface MonthData {
   days: MonthDay[]
   goals: GoalSummary[]
   capacity: Capacity
+  unscheduled: PublicTask[]
 }
 
 export interface DayData {

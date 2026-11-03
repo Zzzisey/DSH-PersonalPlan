@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { capacityBetween, checkCapacity, limitFor, MAX_TASK_MINUTES } from '../src/planning.ts'
+import { capacityBetween, checkCapacity, checkGoalCapacity, limitFor, MAX_TASK_MINUTES } from '../src/planning.ts'
 import type { CapacityRules } from '../src/types.ts'
 
 const rules: CapacityRules = { weekdayMinutes: 240, weekendMinutes: 120, overrides: { '2026-10-31': 60 } }
@@ -55,4 +55,35 @@ test('capacityBetween 按区间累计，周末与覆盖日都生效', () => {
   assert.equal(capacityBetween('2026-10-30', '2026-11-01', rules), 420)
   assert.equal(capacityBetween('2026-10-30', '2026-10-30', rules), 240)
   assert.equal(capacityBetween('2026-11-01', '2026-10-30', rules), 0, '反向区间为 0')
+})
+
+test('目标级容量：来得及返回 undefined', () => {
+  const issue = checkGoalCapacity({
+    proposedMinutes: 300,
+    existingMinutes: 60,
+    deadline: '2026-11-01',
+    today: '2026-10-30',
+    rules,
+  })
+  assert.equal(issue, undefined, '360 <= 420')
+})
+
+test('目标级容量：整体来不及返回 fail', () => {
+  const issue = checkGoalCapacity({
+    proposedMinutes: 400,
+    existingMinutes: 100,
+    deadline: '2026-11-01',
+    today: '2026-10-30',
+    rules,
+  })
+  assert.equal(issue?.kind, 'goal-over-capacity')
+  assert.equal(issue?.severity, 'fail')
+  assert.ok(issue?.message.includes('超过'))
+})
+
+test('目标级容量：无截止日不判定，截止已过则 fail', () => {
+  assert.equal(checkGoalCapacity({ proposedMinutes: 999, deadline: null, today: '2026-10-30', rules }), undefined)
+  const past = checkGoalCapacity({ proposedMinutes: 30, deadline: '2026-10-29', today: '2026-10-30', rules })
+  assert.equal(past?.severity, 'fail')
+  assert.ok(past?.message.includes('已经过去'))
 })

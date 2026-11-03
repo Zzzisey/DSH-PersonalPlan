@@ -149,6 +149,16 @@ export function PlannerView(): React.ReactElement {
     }
   }, [refresh, selected])
 
+  /** 把未排期任务放进当前选中日。 */
+  const scheduleToSelected = useCallback(async (task: PublicTask) => {
+    try {
+      await patchTasks([{ id: task.id, day: selected }])
+      await refresh()
+    } catch (patchError) {
+      setError(message(patchError))
+    }
+  }, [refresh, selected])
+
   const saveCapacity = useCallback(async (next: Capacity) => {
     try {
       await putCapacity(next)
@@ -276,6 +286,24 @@ export function PlannerView(): React.ReactElement {
           </div>
         )}
       </div>
+
+      {monthData !== null && monthData.unscheduled.length > 0 && (
+        <div style={{ ...CARD, padding: '10px 12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            <strong style={{ fontSize: 13 }}>未排期 · {monthData.unscheduled.length}</strong>
+            <span style={{ fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>点「排到这天」放进 {dayLabel(selected)}</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {monthData.unscheduled.map((task) => (
+              <div key={task.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 32 }}>
+                <span style={{ flex: 1, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{task.title}</span>
+                <span style={{ fontSize: 12, color: 'var(--dsw-alias-label-caption)', fontVariantNumeric: 'tabular-nums' }}>{task.estMinutes}min · {task.priority}</span>
+                <button type="button" style={BUTTON} onClick={() => { void scheduleToSelected(task) }}>排到这天</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -109,7 +109,12 @@ function monthPayload(db: DatabaseSync, month: string): unknown {
     }
   })
 
-  return { ok: true, month, today, days, goals, capacity }
+  // 未排期任务单独列出来：它们不在任何一天里，日历上看不到，但也不能就这样消失。
+  const unscheduled = listTasks(db, { limit: 200 })
+    .filter((task) => task.day === null && task.status !== 'done' && task.status !== 'dropped')
+    .map(publicTask)
+
+  return { ok: true, month, today, days, goals, capacity, unscheduled }
 }
 
 /** 某一天的任务清单 + 当日负载。 */
