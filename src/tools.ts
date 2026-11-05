@@ -23,11 +23,12 @@ import {
   setDraftVerdict,
   transaction,
   updateDraftPayload,
+  updateGoal,
   updateTasks,
 } from './db/repo.js'
 import { runJudge, type JudgeChat, type JudgeVerdict } from './judge.js'
 import { addDays, capacityBetween, checkCapacity, evaluatePlan, todayInShanghai, type PlanEntry, type PlanVerdict } from './planning.js'
-import type { CapacityRules, DayLoad, DraftMode, Issue, Priority, Task, TaskStatus, Verdict } from './types.js'
+import type { CapacityRules, DayLoad, DraftMode, GoalStatus, Issue, Priority, Task, TaskStatus, Verdict } from './types.js'
 
 /** 评审结论折算成计划结论：语义 fail 也要用户拍板，而不是直接拒绝。 */
 const JUDGE_TO_PLAN: Record<JudgeVerdict, PlanVerdict> = {
@@ -211,6 +212,59 @@ export function createPlannerTools(db: DatabaseSync, options: PlannerToolOptions
       })
       const tail = goal.deadline === null ? '' : `（截止 ${goal.deadline}）`
       return `已创建目标「${goal.title}」${goal.id}${tail}。下一步：用 planner_plan_propose 提交计划。`
+    },
+  })
+
+  const goalUpdate = defineTool({
+    name: 'planner_goal_update',
+    description:
+      '修改已有目标：状态（active/done/dropped）、标题、动机、截止日期。'
+      + '用于「这个目标做完了」「不做了」「截止延到某天」。只改目标记录，**不删除任何任务**；'
+      + '放弃目标后如需清理任务，再单独用 planner_task_update 处理。',
+    parameters: {
+      goal_id: { type: 'string', required: true, description: '要修改的目标 id' },
+      status: { type: 'string', enum: ['active', 'done', 'dropped'], description: 'active=进行中，done=已完成，dropped=放弃但保留记录' },
+      title: { type: 'string', description: '新标题' },
+      motivation: { type: 'string', description: '新的动机说明' },
+      deadline: { type: 'string', description: '新截止日期 YYYY-MM-DD；传空串表示清除截止' },
+    },
+    output: { schema: { type: 'string' }, render: (_args: unknown, value: string) => [{ type: 'text', text: value }] },
+    async execute(args: Record<string, unknown>) {
+      const goalId = str(args.goal_id)
+      if (goalId === undefined) return bad('goal_id 必填')
+      const goal = getGoal(db, goalId)
+      if (goal === undefined) return bad(`目标 ${goalId} 不存在`)
+
+      const statusRaw = str(args.status)
+      if (statusRaw !== undefined && statusRaw !== 'active' && statusRaw !== 'done' && statusRaw !== 'dropped') {
+        return bad('status 只能是 active / done / dropped')
+      }
+      const deadlineRaw = args.deadline === undefined ? undefined : args.deadline
+      const deadline = deadlineRaw === '' ? null : parseDate(deadlineRaw)
+      if (deadlineRaw !== undefined && deadline === null && deadlineRaw !== '') {
+        return bad('deadline 必须是 YYYY-MM-DD，或空串表示清除')
+      }
+      const title = str(args.title)
+      const motivation = args.motivation === undefined ? undefined : str(args.motivation) ?? ''
+
+      if (statusRaw === undefined && title === undefined && motivation === undefined && deadline === undefined) {
+        return bad('至少提供一个要改的字段：status / title / motivation / deadline')
+      }
+
+      const updated = updateGoal(db, goalId, {
+        ...(statusRaw === undefined ? {} : { status: statusRaw as GoalStatus }),
+        ...(title === undefined ? {} : { title }),
+        ...(motivation === undefined ? {} : { motivation }),
+        ...(deadline === undefined ? {} : { deadline }),
+      })
+      if (updated === undefined) return bad(`目标 ${goalId} 不存在`)
+      const changes = [
+        statusRaw === undefined ? '' : `状态 ${updated.status}`,
+        title === undefined ? '' : `标题「${updated.title}」`,
+        motivation === undefined ? '' : '动机已更新',
+        deadline === undefined ? '' : (updated.deadline === null ? '截止日期已清除' : `截止 ${updated.deadline}`),
+      ].filter((part) => part !== '').join('；')
+      return `已更新目标「${updated.title}」（${updated.id}）：${changes}。任务未做任何改动。`
     },
   })
 
@@ -617,5 +671,5 @@ export function createPlannerTools(db: DatabaseSync, options: PlannerToolOptions
     },
   })
 
-  return [goalCreate, planPropose, planCommit, taskQuery, taskUpdate, overview]
+  return [goalCreate, goalUpdate, planPropose, planCommit, taskQuery, taskUpdate, overview]
 }

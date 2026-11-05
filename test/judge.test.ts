@@ -88,3 +88,11 @@ test('容量已报"整体装不下"时，Judge 再报同一件事会被丢掉', 
   const kept = dropDuplicates(judgeIssues, capacityIssues)
   assert.deepEqual(kept.map((issue) => issue.kind), ['vague'])
 })
+
+test('去重后一条不剩时，fail 降为 warn，不制造"空的 fail"', async () => {
+  const chat: JudgeChat = async () => '{"verdict":"fail","issues":[{"kind":"overload","severity":"fail","message":"10-30 太满"}]}'
+  const result = await runJudge(chat, input)
+  assert.deepEqual(result.issues, [])
+  assert.equal(result.verdict, 'warn')
+  assert.ok((result.note ?? '').includes('重复'))
+})

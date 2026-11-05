@@ -165,5 +165,11 @@ export async function runJudge(chat: JudgeChat, input: JudgeInput, options: Judg
   if (parsed === undefined) {
     return { verdict: 'unverified', issues: [], raw, note: '评审输出无法解析为约定 JSON' }
   }
-  return { verdict: parsed.verdict, issues: dropDuplicates(parsed.issues, input.capacity.issues), raw }
+  const issues = dropDuplicates(parsed.issues, input.capacity.issues)
+  // 去重后一条不剩：Judge 的异议全是容量已经说过的，降为 warn，
+  // 避免出现"没有任何具体问题的 fail"这种自相矛盾的结论。
+  if (issues.length === 0 && parsed.verdict !== 'pass') {
+    return { verdict: 'warn', issues, raw, note: '评审意见与容量报告重复，已合并' }
+  }
+  return { verdict: parsed.verdict, issues, raw }
 }

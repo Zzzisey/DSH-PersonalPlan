@@ -23,6 +23,7 @@ dsh plugin --profile desktop add "D:\path\to\planner"
 | 工具 | 作用 |
 |---|---|
 | `planner_goal_create` | 建目标（标题、动机、截止日） |
+| `planner_goal_update` | 改目标状态（active/done/dropped）、标题、截止；不删任务 |
 | `planner_plan_propose` | 提交计划草稿并做校验（不写正式表） |
 | `planner_plan_commit` | 用户确认后把草稿落库 |
 | `planner_task_query` | 按日期区间查任务 |

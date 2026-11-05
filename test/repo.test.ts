@@ -14,6 +14,7 @@ import {
   setDraftDecision,
   setDraftVerdict,
   setCapacity,
+  updateGoal,
   updateTasks,
 } from './helpers/repoHarness.ts'
 
@@ -126,5 +127,20 @@ test('schema 版本升到 2，且旧库可迁移', () => {
   const columns = db.prepare('PRAGMA table_info(draft)').all() as Array<{ name: string }>
   assert.ok(columns.some((column) => column.name === 'decision_required'))
   assert.ok(columns.some((column) => column.name === 'options_json'))
+  db.close()
+})
+
+test('修改目标：改状态/标题/截止，不碰任务；不存在返回 undefined', () => {
+  const db = openForTest()
+  const goal = createGoal(db, { title: '旧标题', deadline: '2026-11-01' })
+  const task = createTask(db, { goalId: goal.id, title: 'A', day: '2026-11-01' })
+
+  const updated = updateGoal(db, goal.id, { status: 'dropped', title: '新标题', deadline: '2026-12-01' })
+  assert.equal(updated?.status, 'dropped')
+  assert.equal(updated?.title, '新标题')
+  assert.equal(updated?.deadline, '2026-12-01')
+  assert.equal(getTask(db, task.id)?.title, 'A', '任务不受影响')
+
+  assert.equal(updateGoal(db, 'g_missing', { status: 'done' }), undefined)
   db.close()
 })

@@ -11,6 +11,7 @@ import type {
   DraftMode,
   DraftStatus,
   Goal,
+  GoalStatus,
   Issue,
   Phase,
   Priority,
@@ -88,6 +89,36 @@ export function listGoals(db: DatabaseSync, status?: string): Goal[] {
   return (status === undefined
     ? db.prepare(sql).all()
     : db.prepare(sql).all(status)) as unknown as Goal[]
+}
+
+export interface GoalPatch {
+  title?: string
+  motivation?: string | null
+  deadline?: string | null
+  status?: GoalStatus
+}
+
+/**
+ * 修改已有目标。**不删除任务**：放弃目标只改状态，任务仍留给用户处理。
+ * @param db - 连接。
+ * @param id - 目标 id。
+ * @param patch - 要改的字段；空补丁原样返回。
+ * @returns 更新后的目标；目标不存在时 undefined。
+ */
+export function updateGoal(db: DatabaseSync, id: string, patch: GoalPatch): Goal | undefined {
+  const current = getGoal(db, id)
+  if (current === undefined) return undefined
+  const sets: string[] = []
+  const values: unknown[] = []
+  if (patch.title !== undefined) { sets.push('title = ?'); values.push(patch.title.trim()) }
+  if (patch.motivation !== undefined) { sets.push('motivation = ?'); values.push(patch.motivation) }
+  if (patch.deadline !== undefined) { sets.push('deadline = ?'); values.push(patch.deadline) }
+  if (patch.status !== undefined) { sets.push('status = ?'); values.push(patch.status) }
+  if (sets.length === 0) return current
+  sets.push('updated_at = ?')
+  values.push(nowIso(), id)
+  db.prepare(`update goal set ${sets.join(', ')} where id = ?`).run(...values as never[])
+  return getGoal(db, id)
 }
 
 // ---------------------------------------------------------------- phase / task
