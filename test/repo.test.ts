@@ -11,6 +11,7 @@ import {
   listTasks,
   openForTest,
   setDraftStatus,
+  setDraftDecision,
   setDraftVerdict,
   setCapacity,
   updateTasks,
@@ -92,5 +93,38 @@ test('check_log 追加一条校验记录', () => {
   assert.equal(row.kind, 'capacity')
   assert.equal(row.verdict, 'fail')
   assert.equal(JSON.parse(row.issues_json)[0].kind, 'overload')
+  db.close()
+})
+
+test('草稿记录"需要用户决定"与选项，override 也能落日志', () => {
+  const db = openForTest()
+  const draft = createDraft(db, { mode: 'new', payload: { phases: [] } })
+  assert.equal(draft.decisionRequired, 0)
+  assert.equal(draft.optionsJson, null)
+
+  setDraftDecision(db, draft.id, true, [{ code: 'shrink', label: '砍任务' }])
+  const stored = getDraft(db, draft.id)
+  assert.equal(stored?.decisionRequired, 1)
+  assert.deepEqual(JSON.parse(stored?.optionsJson ?? '[]'), [{ code: 'shrink', label: '砍任务' }])
+
+  appendCheck(db, {
+    kind: 'override',
+    target: draft.id,
+    verdict: 'warn',
+    issues: [],
+    model: 'user',
+  })
+  const row = db.prepare("select count(*) as n from check_log where kind = 'override'").get() as { n: number }
+  assert.equal(row.n, 1, 'v2 迁移后 check_log 接受 override')
+  db.close()
+})
+
+test('schema 版本升到 2，且旧库可迁移', () => {
+  const db = openForTest()
+  const row = db.prepare('PRAGMA user_version').get() as { user_version: number }
+  assert.equal(row.user_version, 2)
+  const columns = db.prepare('PRAGMA table_info(draft)').all() as Array<{ name: string }>
+  assert.ok(columns.some((column) => column.name === 'decision_required'))
+  assert.ok(columns.some((column) => column.name === 'options_json'))
   db.close()
 })

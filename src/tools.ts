@@ -18,15 +18,38 @@ import {
   getGoal,
   listGoals,
   listTasks,
+  setDraftDecision,
   setDraftStatus,
   setDraftVerdict,
   transaction,
   updateDraftPayload,
   updateTasks,
 } from './db/repo.js'
-import { mergeVerdict, runJudge, type JudgeChat } from './judge.js'
-import { addDays, capacityBetween, checkCapacity, checkGoalCapacity, todayInShanghai, type PlanEntry } from './planning.js'
+import { runJudge, type JudgeChat, type JudgeVerdict } from './judge.js'
+import { addDays, capacityBetween, checkCapacity, evaluatePlan, todayInShanghai, type PlanEntry, type PlanVerdict } from './planning.js'
 import type { CapacityRules, DayLoad, DraftMode, Issue, Priority, Task, TaskStatus, Verdict } from './types.js'
+
+/** 评审结论折算成计划结论：语义 fail 也要用户拍板，而不是直接拒绝。 */
+const JUDGE_TO_PLAN: Record<JudgeVerdict, PlanVerdict> = {
+  pass: 'ok',
+  warn: 'warn',
+  fail: 'needs_decision',
+  unverified: 'warn',
+}
+
+/** 结论严重度排序，用于取"更严重"的那一档。 */
+const PLAN_ORDER: readonly PlanVerdict[] = ['ok', 'warn', 'needs_decision', 'invalid']
+
+function worseVerdict(left: PlanVerdict, right: PlanVerdict): PlanVerdict {
+  return PLAN_ORDER.indexOf(left) >= PLAN_ORDER.indexOf(right) ? left : right
+}
+
+/** 内部结论映射到数据库/日志沿用的四值词表。 */
+function storedVerdict(verdict: PlanVerdict): Verdict {
+  if (verdict === 'invalid') return 'fail'
+  if (verdict === 'ok') return 'pass'
+  return 'warn'
+}
 
 /** 工具层的可选依赖：目前只有语义评审。缺省时只跑容量校验。 */
 export interface PlannerToolOptions {
@@ -232,32 +255,28 @@ export function createPlannerTools(db: DatabaseSync, options: PlannerToolOptions
 
       const capacity = getCapacity(db) as CapacityRules
       const entries = payloadEntries(payload)
-      const report = checkCapacity(entries, capacity)
-
-      // 目标级容量：日校验只看单天，这里补"整体来不来得及"。
-      const proposedMinutes = entries.reduce((sum, entry) => sum + entry.estMinutes, 0)
       const existingMinutes = listTasks(db, { goalId, limit: 200 })
         .filter((task) => task.status !== 'done' && task.status !== 'dropped')
         .reduce((sum, task) => sum + task.estMinutes, 0)
-      const goalIssue = checkGoalCapacity({
-        proposedMinutes,
-        existingMinutes,
-        deadline: goal.deadline,
-        today: todayInShanghai(),
+      const evaluation = evaluatePlan({
+        entries,
         rules: capacity,
+        goal: { deadline: goal.deadline },
+        existingMinutes,
+        today: todayInShanghai(),
       })
-      const capacityIssues = goalIssue === undefined ? report.issues : [...report.issues, goalIssue]
-      const capacityVerdict: Verdict = capacityIssues.some((issue) => issue.severity === 'fail')
-        ? 'fail'
-        : capacityIssues.some((issue) => issue.severity === 'warn')
-          ? 'warn'
-          : 'pass'
-      appendCheck(db, { kind: 'capacity', target: draft.id, verdict: capacityVerdict, issues: capacityIssues })
 
-      // 语义评审是可选增强：没配置模型就只跑容量，绝不因此拖慢或阻断 propose。
+      // 结构性错误（日期不合理、一天排了 12 小时以上）：不留可提交的草稿。
+      if (evaluation.verdict === 'invalid') {
+        setDraftStatus(db, draft.id, 'discarded')
+        appendCheck(db, { kind: 'capacity', target: draft.id, verdict: 'fail', issues: evaluation.issues })
+        return bad(`提案有结构性错误，不能提交：\n${formatIssues(evaluation.issues)}`)
+      }
+
+      // 语义评审是可选增强：没配置模型就只跑容量。
       let judgeIssues: Issue[] = []
       let judgeNote = ''
-      let verdict: Verdict = capacityVerdict
+      let verdict: PlanVerdict = evaluation.verdict
       if (options.judgeChat !== undefined) {
         const result = await runJudge(options.judgeChat, {
           goal: { title: goal.title, motivation: goal.motivation, deadline: goal.deadline },
@@ -267,15 +286,15 @@ export function createPlannerTools(db: DatabaseSync, options: PlannerToolOptions
             estMinutes: entry.estMinutes,
           })),
           capacity: {
-            days: report.days.map((day) => ({ day: day.day, planned: day.planned, limit: day.limit })),
-            issues: capacityIssues,
+            days: evaluation.days.map((day) => ({ day: day.day, planned: day.planned, limit: day.limit })),
+            issues: evaluation.issues,
           },
         }, {
           ...(options.judgeTimeoutMs === undefined ? {} : { timeoutMs: options.judgeTimeoutMs }),
           ...(options.judgeMaxIssues === undefined ? {} : { maxIssues: options.judgeMaxIssues }),
         })
         judgeIssues = result.issues
-        verdict = mergeVerdict(capacityVerdict, result.verdict)
+        verdict = worseVerdict(verdict, JUDGE_TO_PLAN[result.verdict])
         appendCheck(db, {
           kind: 'semantic',
           target: draft.id,
@@ -290,25 +309,40 @@ export function createPlannerTools(db: DatabaseSync, options: PlannerToolOptions
             : `\n语义评审：${result.note}（按未验证处理）· 原始输出：${excerpt}`
         }
       }
-      setDraftVerdict(db, draft.id, verdict)
 
-      const loads = report.days.length === 0 ? '容量：没有已排期的任务' : `容量：${report.days.map(formatDay).join('；')}`
-      const unplanned = report.unplanned === 0 ? '' : `\n未排期：${report.unplanned} 个任务没有 day`
-      const action = verdict === 'fail'
-        ? '下一步：按上面的问题改这份提案（带同一个 draft_id 再调本工具），fail 不能提交。'
+      setDraftVerdict(db, draft.id, storedVerdict(verdict))
+      appendCheck(db, { kind: 'capacity', target: draft.id, verdict: storedVerdict(evaluation.verdict), issues: evaluation.issues })
+      setDraftDecision(db, draft.id, verdict === 'needs_decision', verdict === 'needs_decision' ? evaluation.options : undefined)
+
+      const loads = evaluation.days.length === 0 ? '容量：没有已排期的任务' : `容量：${evaluation.days.map(formatDay).join('；')}`
+      const unplanned = evaluation.unplanned === 0 ? '' : `\n未排期：${evaluation.unplanned} 个任务没有 day`
+      const optionLines = verdict !== 'needs_decision'
+        ? ''
+        : `\n需要用户决定（把选项原样交给用户，不要自己选）：\n${evaluation.options
+          .map((option, index) => `  ${index + 1}. ${option.label}（decision="${option.code}"）`)
+          .join('\n')}`
+      const action = verdict === 'needs_decision'
+        ? '下一步：先把上面每个问题的影响讲清楚，再让用户选一个选项；用户选好后调 planner_plan_commit(draft_id, decision, reason)。'
         : '下一步：让用户确认后调用 planner_plan_commit(draft_id="' + draft.id + '")；要改就带同样的 draft_id 重新 propose。'
-      return `提案已生成 ${draft.id}，结论 ${verdict}。\n${loads}${unplanned}\n${formatIssues([...capacityIssues, ...judgeIssues])}${judgeNote}\n${action}`
+      return `提案已生成 ${draft.id}，结论 ${verdict}。\n${loads}${unplanned}\n${formatIssues([...evaluation.issues, ...judgeIssues])}${judgeNote}${optionLines}\n${action}`
     },
   })
 
   const planCommit = defineTool({
     name: 'planner_plan_commit',
     description:
-      '把一份通过的草稿真正落库（阶段与任务）。只有用户明确确认后才调用。'
-      + 'verdict=fail 的草稿拒绝提交；verdict=warn 需要 force=true，并且必须先把问题告诉用户。',
+      '把一份草稿真正落库（阶段与任务）。只有用户明确确认后才调用。'
+      + '结构性错误（日期不合理、一天超过 12 小时等）直接拒绝；容量或语义问题不硬拒，'
+      + '但需要用户选一个 decision：accept_overload（接受超载/超期）、apply_reschedule（按建议挪动）、'
+      + 'shrink（砍任务或压缩工时）。提交前会重算容量，propose 之后被改过也能发现。',
     parameters: {
       draft_id: { type: 'string', required: true, description: 'planner_plan_propose 返回的草稿 id' },
-      force: { type: 'boolean', description: 'verdict=warn 时是否跳过确认（只在用户同意后置 true）' },
+      decision: {
+        type: 'string',
+        enum: ['accept_overload', 'apply_reschedule', 'shrink'],
+        description: '结论为 needs_decision 时必填：用户选择如何处理',
+      },
+      reason: { type: 'string', description: '用户为什么这样决定；会写进 check_log 的 override 记录' },
     },
     output: { schema: { type: 'string' }, render: (_args: unknown, value: string) => [{ type: 'text', text: value }] },
     async execute(args: Record<string, unknown>) {
@@ -318,16 +352,52 @@ export function createPlannerTools(db: DatabaseSync, options: PlannerToolOptions
       if (draft === undefined) return bad(`草稿 ${draftId} 不存在`)
       if (draft.status !== 'open') return bad(`草稿 ${draftId} 已经 ${draft.status}，不能重复提交`)
       if (new Date(draft.expiresAt).getTime() < Date.now()) return bad(`草稿已过期（生成于 ${draft.createdAt}），请重新 propose`)
-      if (draft.verdict === 'fail') return bad('这份草稿有容量问题（verdict=fail），必须先改再提交')
-      if (draft.verdict === 'warn' && args.force !== true) {
-        return bad('这份草稿有警告（verdict=warn）。请先把问题告诉用户；用户同意后再带 force=true 提交')
-      }
 
       let payload: DraftPayload
       try {
         payload = JSON.parse(draft.payloadJson) as DraftPayload
       } catch {
         return bad('草稿内容已损坏，请重新 propose')
+      }
+
+      // 提交前重算：propose 之后任务可能被 task_update 改过。
+      const goal = draft.goalId === null ? undefined : getGoal(db, draft.goalId)
+      const entries = payloadEntries(payload)
+      const existingMinutes = draft.goalId === null
+        ? 0
+        : listTasks(db, { goalId: draft.goalId, limit: 200 })
+          .filter((task) => task.status !== 'done' && task.status !== 'dropped')
+          .reduce((sum, task) => sum + task.estMinutes, 0)
+      const evaluation = evaluatePlan({
+        entries,
+        rules: getCapacity(db) as CapacityRules,
+        goal: { deadline: goal?.deadline ?? null },
+        existingMinutes,
+        today: todayInShanghai(),
+      })
+      if (evaluation.verdict === 'invalid') {
+        return bad(`草稿有结构性错误，不能提交：\n${formatIssues(evaluation.issues)}`)
+      }
+
+      const decisionRaw = str(args.decision)
+      const decision = decisionRaw === 'accept_overload' || decisionRaw === 'apply_reschedule' || decisionRaw === 'shrink'
+        ? decisionRaw
+        : undefined
+      if (evaluation.verdict === 'needs_decision') {
+        if (decision === undefined) {
+          const options = evaluation.options
+            .map((option, index) => `  ${index + 1}. ${option.label}（decision="${option.code}"）`)
+            .join('\n')
+          return bad(`这份草稿需要用户决定：\n${formatIssues(evaluation.issues)}\n可选：\n${options}\n用户选好后带 decision（可附 reason）再提交。`)
+        }
+        const reasonText = str(args.reason) ?? ''
+        appendCheck(db, {
+          kind: 'override',
+          target: draft.id,
+          verdict: 'warn',
+          issues: evaluation.issues,
+          model: `user:${decision}${reasonText === '' ? '' : ` · ${reasonText}`}`,
+        })
       }
 
       const result = transaction(db, () => {
@@ -368,7 +438,7 @@ export function createPlannerTools(db: DatabaseSync, options: PlannerToolOptions
           if (task.day === undefined) unplanned += 1
         }
         setDraftStatus(db, draft.id, 'committed')
-        appendCheck(db, { kind: 'commit', target: draft.id, verdict: draft.verdict ?? 'pass', issues: [] })
+        appendCheck(db, { kind: 'commit', target: draft.id, verdict: storedVerdict(evaluation.verdict), issues: [] })
         return { phases: payload.phases.length, tasks: taskCount, unplanned }
       })
 

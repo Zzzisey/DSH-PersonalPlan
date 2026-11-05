@@ -24,7 +24,7 @@ const PHASE_COLUMNS = 'id, goal_id AS goalId, title, seq, start_day AS startDay,
 const TASK_COLUMNS = `id, goal_id AS goalId, phase_id AS phaseId, title, day,
   est_minutes AS estMinutes, actual_minutes AS actualMinutes, priority, status, note,
   created_at AS createdAt, updated_at AS updatedAt`
-const DRAFT_COLUMNS = 'id, goal_id AS goalId, mode, payload_json AS payloadJson, verdict, status, created_at AS createdAt, expires_at AS expiresAt'
+const DRAFT_COLUMNS = 'id, goal_id AS goalId, mode, payload_json AS payloadJson, verdict, status, decision_required AS decisionRequired, options_json AS optionsJson, created_at AS createdAt, expires_at AS expiresAt'
 
 /** 草稿有效期 24 小时：跨轮可改，隔天作废。 */
 const DRAFT_TTL_MS = 24 * 60 * 60 * 1000
@@ -227,8 +227,8 @@ export interface CreateDraftInput {
 export function createDraft(db: DatabaseSync, input: CreateDraftInput): Draft {
   const stamp = new Date()
   const id = newId('d')
-  db.prepare(`insert into draft (id, goal_id, mode, payload_json, verdict, status, created_at, expires_at)
-    values (?,?,?,?,null,'open',?,?)`).run(
+  db.prepare(`insert into draft (id, goal_id, mode, payload_json, verdict, status, decision_required, options_json, created_at, expires_at)
+    values (?,?,?,?,null,'open',0,null,?,?)`).run(
     id,
     input.goalId ?? null,
     input.mode,
@@ -254,6 +254,21 @@ export function setDraftVerdict(db: DatabaseSync, id: string, verdict: Verdict):
 
 export function setDraftStatus(db: DatabaseSync, id: string, status: DraftStatus): void {
   db.prepare('update draft set status = ? where id = ?').run(status, id)
+}
+
+/**
+ * 记录"这份草稿需要用户决定"，并保存选项清单。
+ * @param db - 连接。
+ * @param id - 草稿 id。
+ * @param required - 是否需要用户决定。
+ * @param options - 给用户的选项数组；不需要时传 undefined。
+ */
+export function setDraftDecision(db: DatabaseSync, id: string, required: boolean, options: unknown): void {
+  db.prepare('update draft set decision_required = ?, options_json = ? where id = ?').run(
+    required ? 1 : 0,
+    options === undefined ? null : JSON.stringify(options),
+    id,
+  )
 }
 
 // ---------------------------------------------------------------- check_log / setting

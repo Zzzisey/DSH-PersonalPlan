@@ -7,7 +7,7 @@ export type Priority = 'P0' | 'P1' | 'P2'
 export type Verdict = 'pass' | 'warn' | 'fail' | 'unverified'
 export type DraftStatus = 'open' | 'committed' | 'discarded'
 export type DraftMode = 'new' | 'adjust'
-export type CheckKind = 'capacity' | 'semantic' | 'commit'
+export type CheckKind = 'capacity' | 'semantic' | 'commit' | 'override'
 
 export interface Goal {
   id: string
@@ -53,6 +53,8 @@ export interface Draft {
   payloadJson: string
   verdict: Verdict | null
   status: DraftStatus
+  decisionRequired: number
+  optionsJson: string | null
   createdAt: string
   expiresAt: string
 }
@@ -66,6 +68,8 @@ export interface Issue {
   where?: { phaseIndex?: number; taskIndex?: number }
   taskId?: string
   day?: string
+  /** 处置方式：只提示 / 需要用户决定（HITL）/ 数据错误直接拒绝。 */
+  blocking?: 'none' | 'decision' | 'invalid'
 }
 
 /** 单日容量报告。`load = planned / limit`。 */

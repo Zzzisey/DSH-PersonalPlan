@@ -75,3 +75,16 @@ test('输出无法解析时降级为 unverified', async () => {
   assert.equal(result.verdict, 'unverified')
   assert.ok((result.note ?? '').includes('无法解析'))
 })
+
+test('容量已报"整体装不下"时，Judge 再报同一件事会被丢掉', () => {
+  const judgeIssues: Issue[] = [
+    { kind: 'overload', severity: 'fail', message: '7 个任务共 770 分钟，超过可用 720 分钟' },
+    { kind: 'goal-over-capacity', severity: 'fail', message: '装不下' },
+    { kind: 'vague', severity: 'warn', message: '任务标题太笼统' },
+  ]
+  const capacityIssues: Issue[] = [
+    { kind: 'goal-over-capacity', severity: 'warn', blocking: 'decision', message: '770 > 720' },
+  ]
+  const kept = dropDuplicates(judgeIssues, capacityIssues)
+  assert.deepEqual(kept.map((issue) => issue.kind), ['vague'])
+})

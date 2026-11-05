@@ -114,8 +114,11 @@ export function dropDuplicates(judgeIssues: Issue[], capacityIssues: Issue[]): I
   const hasOverload = capacityIssues.some((issue) => issue.kind === 'overload')
   const hasNear = capacityIssues.some((issue) => issue.kind === 'near-capacity')
   const hasTooBig = capacityIssues.some((issue) => issue.kind === 'task-too-big')
+  // 目标级容量也是"装不下"，Judge 用自己的话再报一遍时同样要丢。
+  const hasGoalOver = capacityIssues.some((issue) => issue.kind === 'goal-over-capacity')
   return judgeIssues.filter((issue) => {
-    if (issue.kind === 'overload' && (hasOverload || hasNear)) return false
+    if (issue.kind === 'overload' && (hasOverload || hasNear || hasGoalOver)) return false
+    if (issue.kind === 'goal-over-capacity' && hasGoalOver) return false
     if (issue.kind === 'task-too-big' && hasTooBig) return false
     return true
   })

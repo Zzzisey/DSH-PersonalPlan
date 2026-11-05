@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 /** 当前 schema 版本；加字段时 +1 并在 migrate 里补一段。 */
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 
 export interface DbConfig {
   /** 绝对路径；留空用 `~/.dsh/personal-planner/planner.sqlite`。 */
@@ -110,6 +110,33 @@ create index if not exists idx_draft_status on draft(status);
 `
 
 /**
+ * v2：草稿记录"是否需要用户决定"与选项；check_log 允许 `override`。
+ *
+ * SQLite 改不了 CHECK 约束，所以 check_log 走"建新表 → 搬家 → 改名"。
+ * @param db - 已打开的连接。
+ */
+function migrateToV2(db: DatabaseSync): void {
+  db.exec(`
+    alter table draft add column decision_required integer not null default 0;
+    alter table draft add column options_json text;
+
+    create table check_log_v2 (
+      id          integer primary key autoincrement,
+      at          text not null,
+      kind        text not null check (kind in ('capacity','semantic','commit','override')),
+      target      text not null,
+      verdict     text not null check (verdict in ('pass','warn','fail','unverified')),
+      issues_json text not null,
+      model       text
+    );
+    insert into check_log_v2 (id, at, kind, target, verdict, issues_json, model)
+      select id, at, kind, target, verdict, issues_json, model from check_log;
+    drop table check_log;
+    alter table check_log_v2 rename to check_log;
+  `)
+}
+
+/**
  * 建表或升级到当前版本。
  * @param db - 已打开的连接。
  * @throws {SchemaTooNewError} 库版本高于插件支持版本。
@@ -121,6 +148,10 @@ export function migrate(db: DatabaseSync): void {
   if (version < 1) {
     db.exec(DDL_V1)
     db.exec('PRAGMA user_version = 1')
+  }
+  if (version < 2) {
+    migrateToV2(db)
+    db.exec('PRAGMA user_version = 2')
   }
 }
 
