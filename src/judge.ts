@@ -142,7 +142,7 @@ export function mergeVerdict(capacity: 'pass' | 'warn' | 'fail', judge: JudgeVer
  * @param options - 超时与条数上限。
  */
 export async function runJudge(chat: JudgeChat, input: JudgeInput, options: JudgeOptions = {}): Promise<JudgeResult> {
-  const timeoutMs = options.timeoutMs ?? 30000
+  const timeoutMs = options.timeoutMs ?? 60000
   const maxIssues = options.maxIssues ?? 12
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
