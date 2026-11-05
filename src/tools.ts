@@ -27,8 +27,19 @@ import {
   updateTasks,
 } from './db/repo.js'
 import { runJudge, type JudgeChat, type JudgeVerdict } from './judge.js'
-import { addDays, capacityBetween, checkCapacity, evaluatePlan, todayInShanghai, type PlanEntry, type PlanVerdict } from './planning.js'
+import { addDays, capacityBetween, checkCapacity, evaluatePlan, limitFor, todayInShanghai, type PlanEntry, type PlanVerdict } from './planning.js'
+import { runReschedule, type Move, type RescheduleChat } from './reschedule.js'
 import type { CapacityRules, DayLoad, DraftMode, GoalStatus, Issue, Priority, Task, TaskStatus, Verdict } from './types.js'
+
+/** 工具层的可选依赖：语义评审 + 自动挪动都复用模型通道。 */
+export interface PlannerToolOptions {
+  judgeChat?: JudgeChat
+  judgeModel?: string
+  judgeTimeoutMs?: number
+  judgeMaxIssues?: number
+  rescheduleChat?: RescheduleChat
+  rescheduleTimeoutMs?: number
+}
 
 /** 评审结论折算成计划结论：语义 fail 也要用户拍板，而不是直接拒绝。 */
 const JUDGE_TO_PLAN: Record<JudgeVerdict, PlanVerdict> = {
@@ -40,6 +51,29 @@ const JUDGE_TO_PLAN: Record<JudgeVerdict, PlanVerdict> = {
 
 /** 结论严重度排序，用于取"更严重"的那一档。 */
 const PLAN_ORDER: readonly PlanVerdict[] = ['ok', 'warn', 'needs_decision', 'invalid']
+
+/** 把 payload 摊平成任务列表，顺序：各阶段任务 → loose_tasks。 */
+function flattenPayload(payload: DraftPayload): DraftTask[] {
+  const flat: DraftTask[] = []
+  for (const phase of payload.phases) flat.push(...phase.tasks)
+  flat.push(...payload.looseTasks)
+  return flat
+}
+
+/** 按扁平下标应用模型给出的移动，返回新的 payload（原对象不变）。 */
+function applyMovesToPayload(payload: DraftPayload, moves: readonly Move[]): DraftPayload {
+  const byIndex = new Map(moves.map((move) => [move.index, move.to]))
+  let index = 0
+  const take = (task: DraftTask): DraftTask => {
+    const to = byIndex.get(index)
+    index += 1
+    return to === undefined ? task : { ...task, day: to }
+  }
+  return {
+    phases: payload.phases.map((phase) => ({ ...phase, tasks: phase.tasks.map(take) })),
+    looseTasks: payload.looseTasks.map(take),
+  }
+}
 
 function worseVerdict(left: PlanVerdict, right: PlanVerdict): PlanVerdict {
   return PLAN_ORDER.indexOf(left) >= PLAN_ORDER.indexOf(right) ? left : right
@@ -437,27 +471,82 @@ export function createPlannerTools(db: DatabaseSync, options: PlannerToolOptions
       const decision = decisionRaw === 'accept_overload' || decisionRaw === 'apply_reschedule' || decisionRaw === 'shrink'
         ? decisionRaw
         : undefined
-      if (evaluation.verdict === 'needs_decision') {
-        if (decision === undefined) {
-          const options = evaluation.options
-            .map((option, index) => `  ${index + 1}. ${option.label}（decision="${option.code}"）`)
-            .join('\n')
-          return bad(`这份草稿需要用户决定：\n${formatIssues(evaluation.issues)}\n可选：\n${options}\n用户选好后带 decision（可附 reason）再提交。`)
+      if (evaluation.verdict === 'needs_decision' && decision === undefined) {
+        const options = evaluation.options
+          .map((option, index) => `  ${index + 1}. ${option.label}（decision="${option.code}"）`)
+          .join('\n')
+        return bad(`这份草稿需要用户决定：\n${formatIssues(evaluation.issues)}\n可选：\n${options}\n用户选好后带 decision（可附 reason）再提交。`)
+      }
+
+      // apply_reschedule：模型按语义提议怎么挪，算数只校验不越界。
+      let commitPayload = payload
+      let moveReport = ''
+      if (decision === 'apply_reschedule') {
+        if (options.rescheduleChat === undefined) {
+          return bad('没有配置模型，无法按语义自动挪动。请改用 decision="shrink" 或 "accept_overload"，或手动改好日期后重新 propose。')
         }
+        const today = todayInShanghai()
+        const flat = flattenPayload(payload)
+        const capacity = getCapacity(db) as CapacityRules
+        const lastDay = flat.reduce((max, task) => (task.day !== undefined && task.day > max ? task.day : max), today)
+        const end = goal?.deadline !== null && goal?.deadline !== undefined && goal.deadline < lastDay ? lastDay : (goal?.deadline ?? lastDay)
+        const existing = listTasks(db, { from: today, to: end, limit: 200 })
+        const planned = new Map<string, number>()
+        for (const task of existing) {
+          if (task.day === null || task.status === 'done' || task.status === 'dropped') continue
+          planned.set(task.day, (planned.get(task.day) ?? 0) + task.estMinutes)
+        }
+        for (const task of flat) {
+          if (task.day === undefined) continue
+          planned.set(task.day, (planned.get(task.day) ?? 0) + task.estMinutes)
+        }
+        const days: Array<{ day: string; limit: number; planned: number }> = []
+        for (let day = today; day <= end; day = addDays(day, 1)) {
+          days.push({ day, limit: limitFor(day, capacity), planned: planned.get(day) ?? 0 })
+        }
+        const context = {
+          entries: flat.map((task, index) => ({
+            index,
+            title: task.title,
+            day: task.day ?? null,
+            estMinutes: task.estMinutes,
+            priority: task.priority ?? 'P2' as Priority,
+          })),
+          days,
+          today,
+          deadline: goal?.deadline ?? null,
+        }
+        const proposal = await runReschedule(options.rescheduleChat, context, {
+          ...(options.rescheduleTimeoutMs === undefined ? {} : { timeoutMs: options.rescheduleTimeoutMs }),
+        })
+        if (proposal.note !== undefined) return bad(`自动挪动失败：${proposal.note}`)
+        if (proposal.issues.length > 0) {
+          return bad(`模型给的挪动方案不合法，未提交：\n${formatIssues(proposal.issues)}\n可以让用户改用 shrink / accept_overload，或改好日期重新 propose。`)
+        }
+        if (proposal.moves.length === 0) {
+          return bad('模型没有给出任何可挪动的任务；若确实挪不动，请改用 decision="shrink" 或 "accept_overload"。')
+        }
+        commitPayload = applyMovesToPayload(payload, proposal.moves)
+        moveReport = proposal.moves
+          .map((move) => `「${flat[move.index]?.title ?? `#${move.index}`}」→ ${move.to}${move.reason === undefined ? '' : `（${move.reason}）`}`)
+          .join('；')
+      }
+
+      if (decision !== undefined) {
         const reasonText = str(args.reason) ?? ''
         appendCheck(db, {
           kind: 'override',
           target: draft.id,
           verdict: 'warn',
           issues: evaluation.issues,
-          model: `user:${decision}${reasonText === '' ? '' : ` · ${reasonText}`}`,
+          model: `user:${decision}${reasonText === '' ? '' : ` · ${reasonText}`}${moveReport === '' ? '' : ` · ${moveReport}`}`,
         })
       }
 
       const result = transaction(db, () => {
         let taskCount = 0
         let unplanned = 0
-        for (const [index, phase] of payload.phases.entries()) {
+        for (const [index, phase] of commitPayload.phases.entries()) {
           const created = createPhase(db, {
             goalId: draft.goalId ?? '',
             title: phase.title,
@@ -479,7 +568,7 @@ export function createPlannerTools(db: DatabaseSync, options: PlannerToolOptions
             if (task.day === undefined) unplanned += 1
           }
         }
-        for (const task of payload.looseTasks) {
+        for (const task of commitPayload.looseTasks) {
           createTask(db, {
             ...(draft.goalId === null ? {} : { goalId: draft.goalId }),
             title: task.title,
@@ -493,11 +582,12 @@ export function createPlannerTools(db: DatabaseSync, options: PlannerToolOptions
         }
         setDraftStatus(db, draft.id, 'committed')
         appendCheck(db, { kind: 'commit', target: draft.id, verdict: storedVerdict(evaluation.verdict), issues: [] })
-        return { phases: payload.phases.length, tasks: taskCount, unplanned }
+        return { phases: commitPayload.phases.length, tasks: taskCount, unplanned }
       })
 
       const extra = result.unplanned === 0 ? '' : `，其中 ${result.unplanned} 个未排期`
-      return `已落库：${result.phases} 个阶段、${result.tasks} 个任务${extra}。`
+      const moved = moveReport === '' ? '' : `\n挪动：${moveReport}`
+      return `已落库：${result.phases} 个阶段、${result.tasks} 个任务${extra}。${moved}`
     },
   })
 

@@ -139,8 +139,10 @@ export function apply(ctx: Context, config: Config = {}): void {
       ? {}
       : {
         judgeChat,
+        // 自动挪动复用同一条模型通道：语义评审与语义挪动是同一类调用。
+        rescheduleChat: judgeChat,
         judgeModel: judge === undefined ? '' : `${judge.provider}/${judge.model}`,
-        ...(judge?.timeoutMs === undefined ? {} : { judgeTimeoutMs: judge.timeoutMs }),
+        ...(judge?.timeoutMs === undefined ? {} : { judgeTimeoutMs: judge.timeoutMs, rescheduleTimeoutMs: judge.timeoutMs }),
         ...(judge?.maxIssues === undefined ? {} : { judgeMaxIssues: judge.maxIssues }),
       }
     const disposers = createPlannerTools(db, toolOptions).map((tool) => ctx.tools.register(tool))
