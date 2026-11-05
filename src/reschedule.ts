@@ -188,7 +188,7 @@ export async function runReschedule(
   context: RescheduleContext,
   options: { timeoutMs?: number } = {},
 ): Promise<{ moves: Move[]; issues: Issue[]; note?: string; raw: string }> {
-  const timeoutMs = options.timeoutMs ?? 8000
+  const timeoutMs = options.timeoutMs ?? 30000
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   let raw = ''

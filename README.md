@@ -47,7 +47,7 @@ dsh plugin --profile desktop add "D:\path\to\planner"
     judge:
       provider: deepseek-official
       model: deepseek-flash
-      timeoutMs: 8000
+      timeoutMs: 30000
 ```
 
 评审超时或输出不合约时降级为 `unverified`，不会阻塞提交。
