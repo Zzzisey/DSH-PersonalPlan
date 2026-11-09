@@ -96,6 +96,19 @@ Core 包含纯类型和纯函数：
 
 Core 不读数据库、不调用模型、不发送请求、不拼 UI 文案。
 
+文件功能范围：
+
+| 文件 | 负责 | 不负责 |
+|---|---|---|
+| `src/core/types.ts` | 定义 Goal、Phase、Task、Proposal、Snapshot、Diff、Command Result 等跨模块类型；只包含类型和无副作用的值对象构造 | SQL 行映射、Tool 参数、HTTP DTO、React Props、提示词 |
+| `src/core/policy.ts` | 定义阶段枚举、字段许可表、数值阈值、合法转换和稳定错误码；作为 Prompt、Tool Schema 与 Validator 的规则来源 | 读取配置、执行校验流程、访问数据库、生成面向用户的长文案 |
+| `src/core/proposal.ts` | 纯函数实现 Proposal 状态转换、revision 推进、阶段退回、下游字段失效和终态保护 | 保存 Proposal、读取正式计划、判断当前 Session 所有权、开启事务 |
+| `src/core/diff.ts` | 按正式 id 与 draft-local id 比较 baseline/candidate，生成 added、removed、unchanged 和变更摘要；支持按日期范围裁剪 | 决定 UI 颜色和组件、查询数据库、提交变更 |
+| `src/core/validation/structure.ts` | 检查结构阶段字段、空阶段、顺序、数量边界、缺失归属和可确定识别的重复项 | 使用 LLM 判断语义质量、补写阶段或任务、读取时长和日期 |
+| `src/core/validation/estimate.ts` | 检查估时完整性、15 分钟刻度、15–120 分钟范围和可确定识别的碎片比例；指出是否必须退回结构阶段 | 自行合并任务、生成新估时、安排日期 |
+| `src/core/validation/schedule.ts` | 检查日期格式、排期窗口、required ordering、截止日期和候选排期的内部一致性 | 查询其他目标的实时负载、选择应该移动哪项任务、写库 |
+| `src/core/validation/capacity.ts` | 对调用方提供的正式占用和 candidate 计算每日负载、剩余容量和硬性容量问题 | 从 Repo 加载任务、决定业务取舍、执行 override |
+
 `policy.ts` 是稳定规则的单一代码来源，至少定义：
 
 - 阶段枚举和合法转换；
@@ -149,6 +162,12 @@ PlannerService 不负责：
 - 直接调用 LLM；
 - 拼接 HTTP Response 或 React 视图。
 
+文件功能范围：
+
+| 文件 | 负责 | 不负责 |
+|---|---|---|
+| `src/host/planner-service.ts` | 实现 Goal、Proposal、Calendar、Task、Capacity 用例；加载上下文；调用 Core；协调 Repository；检查 Session、revision 与 schedule version；返回结构化业务结果 | 定义 Tool Schema、解析 HTTP、执行 SQL、调用 LLM、渲染 React 或自然语言工具卡片 |
+
 ### 3.3 Repository
 
 `PlannerRepository` 是 PlannerService 与 SQLite 之间的窄接口。它的目的不是预设将来一定换数据库，而是隔离 SQL、事务和迁移细节，支持 Service 单测。
@@ -161,6 +180,14 @@ src/host/
 ├── sqlite-repository.ts
 └── schema.ts
 ```
+
+文件功能范围：
+
+| 文件 | 负责 | 不负责 |
+|---|---|---|
+| `src/host/repository.ts` | 定义 PlannerRepository 接口、查询条件、事务输入输出和持久化错误类型；供 Service 与测试实现依赖 | SQLite API、DDL、业务阶段推进、面向用户的错误文案 |
+| `src/host/sqlite-repository.ts` | 实现 PlannerRepository；负责 SQL、行映射、预编译语句、条件更新、事务和 SQLite 错误归一化 | 判断阶段是否合法、生成 Diff、选择重排方案、拼 Tool/HTTP 响应 |
+| `src/host/schema.ts` | 定义 schema version、DDL、向前迁移、数据库打开参数和迁移完整性检查 | 日常 CRUD、业务查询、Proposal 状态转换、兼容策略之外的数据自动修复 |
 
 Repository 负责：
 
@@ -178,11 +205,22 @@ Repository 返回业务数据，不返回面向用户的自然语言错误。并
 
 ```text
 src/host/tools/
+├── index.ts
 ├── goals.ts
 ├── plans.ts
 ├── tasks.ts
 └── presentation.ts
 ```
+
+文件功能范围：
+
+| 文件 | 负责 | 不负责 |
+|---|---|---|
+| `src/host/tools/index.ts` | 汇总 ToolDefinition，统一注册和释放；根据 `planningFlow` 选择 legacy 或 staged 工具集 | 定义业务规则、执行 Service 用例、访问 Repo |
+| `src/host/tools/goals.ts` | 定义目标创建、查询和允许的目标更新工具；把参数映射为 PlannerService Goal Command | 创建阶段或任务、规划三阶段、直接执行 SQL |
+| `src/host/tools/plans.ts` | 定义四种场景入口和 Proposal advance/get/commit/discard；从 `exec.agent` 提取 Session 身份；声明结构化输入输出 | 生成计划内容、执行校验算法、调用 LLM、实现提交事务 |
+| `src/host/tools/tasks.ts` | 定义正式任务查询、完成等无需重做计划的操作；把会改变计划结构或日期的请求引导到 Proposal 场景 | 绕过 Proposal 直接批量改排期、复制 Route 逻辑、计算容量 |
+| `src/host/tools/presentation.ts` | 把结构化 Tool 结果纯映射为模型可读 ContentBlock 和通用 Tool 卡片；统一标题、摘要和错误展示 | 重新查询 Service、改变业务结果、决定是否允许提交 |
 
 Tool 是 DSH Agent 到 PlannerService 的适配器，只负责：
 
@@ -239,6 +277,12 @@ Route 不再直接调用 `listTasks()`、`updateTasks()` 或容量函数。
 - 某 Proposal 在指定月份的服务端 Diff；
 - Proposal 确认、取消修改、彻底放弃。
 
+文件功能范围：
+
+| 文件 | 负责 | 不负责 |
+|---|---|---|
+| `src/host/routes.ts` | 注册 Host 路由；校验传输层参数；调用 PlannerService；把业务结果映射为 HTTP 状态与 JSON；处理分页、月份范围和响应裁剪 | 直接访问 Repository、计算 Diff/容量、推进 Proposal、执行提交 SQL、维护 Client 状态 |
+
 ### 3.6 Client
 
 建议结构：
@@ -251,6 +295,9 @@ src/client/
 ├── PlannerView.tsx
 ├── ProposalPreview.tsx
 └── components/
+    ├── CalendarGrid.tsx
+    ├── TaskList.tsx
+    └── CapacityEditor.tsx
 ```
 
 `planner-model.ts` 管理：
@@ -263,6 +310,19 @@ src/client/
 - Host 变更后的统一刷新。
 
 React 组件只订阅 Client Model 并渲染，不自行计算正式数据与 Proposal Diff。
+
+文件功能范围：
+
+| 文件 | 负责 | 不负责 |
+|---|---|---|
+| `src/client/index.tsx` | Client 插件入口；注册 conversation slots；创建并向组件提供 PlannerModel | 请求业务数据、保存页面状态、渲染完整日历、实现业务判断 |
+| `src/client/api.ts` | 封装 Host API 的类型化请求、响应解析、取消和传输错误；不保存长期状态 | 计算 Diff、乐观修改正式计划、决定刷新策略、展示错误 |
+| `src/client/planner-model.ts` | 保存月份、选中日期、正式视图、活跃 Proposal 和 revision；组织加载、失效、确认、取消与统一刷新；向 React 暴露订阅和命令 | 重新实现 Host 校验、匹配 Diff、执行 SQL、包含 JSX |
+| `src/client/PlannerView.tsx` | 组合正式日历、目标摘要、日期清单和 ProposalPreview；根据 PlannerModel 状态选择页面模式 | 直接发 fetch、保存业务真相、计算容量和 Diff、实现 Proposal 状态机 |
+| `src/client/ProposalPreview.tsx` | 渲染服务端返回的变更摘要、红绿任务、确认/取消/放弃操作和 stale 提示 | 比较 baseline/candidate、偷偷修改 candidate、在本地判定提交合法性 |
+| `src/client/components/CalendarGrid.tsx` | 渲染月份网格、日期选择、正式/预览任务和容量条；通过回调上报交互 | 请求数据、持有 Proposal、计算月份 Diff |
+| `src/client/components/TaskList.tsx` | 渲染某日任务列表、完成状态及允许的直接操作 | 决定任务是否应删除/改期、访问 API、计算容量 |
+| `src/client/components/CapacityEditor.tsx` | 编辑容量表单、做输入层即时校验并提交回调 | 保存权威容量、判断 Proposal 是否因此失效、直接调用 Repository |
 
 ### 3.7 System Prompt 与 Skill
 
@@ -285,6 +345,31 @@ Skill 提供场景知识
 Agent 生成与语义评审
 Core / Service 执行确定性约束和持久化
 ```
+
+文件功能范围：
+
+| 文件 | 负责 | 不负责 |
+|---|---|---|
+| `src/host/prompt.ts` | 从 Core policy 组装并注册稳定 System Prompt section；包含对象定义、流程、工具选择规则和少量正反例 | 保存会话状态、执行规划、调用工具、包含具体业务场景的完整知识库 |
+| `skills/<scenario>/SKILL.md` | 描述某个业务场景的任务粒度、典型依赖、估时经验和缓冲规则；由 DSH Skill 机制按需提供给 Agent | 定义通用 Proposal 生命周期、修改数据库、重复 Tool 参数契约、充当持久化状态 |
+
+### 3.8 插件入口与配置
+
+建议增加独立配置文件，使入口只负责装配：
+
+```text
+src/
+├── index.ts
+└── host/
+    └── config.ts
+```
+
+文件功能范围：
+
+| 文件 | 负责 | 不负责 |
+|---|---|---|
+| `src/index.ts` | 声明 Cordis inject；创建 SQLite Repository 和 PlannerService；注册 Prompt、Tools、Routes 与 disposer；处理无法启动时的降级接线 | 定义业务类型、写 SQL、拼 Tool Schema、实现用例、直接调用 LLM |
+| `src/host/config.ts` | 定义插件配置类型、默认值和启动期校验；包含数据库路径、`planningFlow` 等部署选项 | 保存用户运行期容量偏好、读取数据库、决定 Proposal 状态、注册 Cordis 插件 |
 
 ## 4. 提案模型
 
@@ -475,7 +560,12 @@ src/
 │   ├── proposal.ts
 │   ├── diff.ts
 │   └── validation/
+│       ├── structure.ts
+│       ├── estimate.ts
+│       ├── schedule.ts
+│       └── capacity.ts
 ├── host/
+│   ├── config.ts
 │   ├── planner-service.ts
 │   ├── repository.ts
 │   ├── sqlite-repository.ts
@@ -483,6 +573,11 @@ src/
 │   ├── prompt.ts
 │   ├── routes.ts
 │   └── tools/
+│       ├── index.ts
+│       ├── goals.ts
+│       ├── plans.ts
+│       ├── tasks.ts
+│       └── presentation.ts
 └── client/
     ├── index.tsx
     ├── api.ts
@@ -490,6 +585,9 @@ src/
     ├── PlannerView.tsx
     ├── ProposalPreview.tsx
     └── components/
+        ├── CalendarGrid.tsx
+        ├── TaskList.tsx
+        └── CapacityEditor.tsx
 ```
 
 `src/index.ts` 最终只负责装配与生命周期：
