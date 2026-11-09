@@ -1,6 +1,6 @@
 # STATE · 当前实际状态
 
-> 这份文件描述**代码和数据库里现在真实存在的东西**，不是设计意图（那在仓库外的 `DESIGN.md`）。
+> 这份文件描述**代码和数据库里现在真实存在的东西**，不是 V2 设计意图。V2 业务流程、架构和迁移方案分别见 `NEW_PLANNING_FLOW.md`、`ARCHITECTURE_V2.md`、`MIGRATION_V2.md`。
 > 每次功能改动后同步更新。最后核对：2026-11-06，核对方式：直接读 DDL + 查询真实库。
 
 ## 1. 数据表（SQLite，`~/.dsh/personal-planner/planner.sqlite`）

@@ -1,7 +1,7 @@
 # Backlog
 
 > 待办清单。状态：`todo` / `doing` / `done` / `dropped`。
-> 里程碑定义见仓库外的 `DESIGN.md`；这里只列"还没做的事"和已知瑕疵。
+> V2 设计见 `NEW_PLANNING_FLOW.md`、`ARCHITECTURE_V2.md`、`MIGRATION_V2.md`；这里只列"还没做的事"和已知瑕疵。
 > 最近更新：2026-11-05
 
 ## P0 · 承诺了但没做到
@@ -80,5 +80,5 @@
 | LICENSE 文件 | todo | README 声明 MIT，仓库缺文件 |
 | 截图 / 演示 GIF | todo | 面板与对话各一张 |
 | 发布流程（GitHub Release 挂 tgz 或 npm） | todo | 版本号目前 0.1.0 |
-| 设计文档入库 | dropped | 用户决定留在仓库外 |
+| V2 设计文档入库 | done | 业务流程、架构和迁移计划已进入独立文档分支，等待评审 |
 | 客户端单元测试 | todo | `usePlanner` 的乐观更新与回滚逻辑值得测 |
