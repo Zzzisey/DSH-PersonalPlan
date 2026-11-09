@@ -17,7 +17,7 @@
 
 ## 2. 当前基线
 
-当前代码和数据基线见 [`STATE.md`](./STATE.md)：
+当前代码和数据基线以源码及数据库迁移代码为准：
 
 - SQLite `user_version = 2`；
 - 正式表为 `goal / phase / task`；
@@ -25,7 +25,7 @@
 - Tool、Route 直接访问 Repo；
 - `planner_plan_propose` 一次性接收结构、时长和日期；
 - Judge 与 Reschedule 通过插件内部 `ctx.llm.stream` 调用；
-- Client 不展示草稿。
+- Client 不展示 legacy `draft`。
 
 迁移期间必须保护：
 
@@ -80,12 +80,12 @@
 ### Tool
 
 - goal create / update；
-- legacy propose 正常草稿；
+- legacy propose 正常写入旧 `draft`；
 - invalid 拒绝；
 - decision 分支；
 - commit 原子写入；
 - 重复 commit 拒绝；
-- 过期 Draft 拒绝。
+- 过期 legacy `draft` 拒绝。
 
 ### Route
 
@@ -153,6 +153,8 @@
 
 在 legacy 默认行为不变的版本中先引入 V2 所需的持久化结构。该版本是数据库升级后的安全回滚基线。
 
+V2 只新增一个候选计划工作流对象 `PlanProposal`，对应 `plan_proposal` 表。本文中的“草稿”和“提案”不是两份数据：`PlanProposal` 在提交前属于草稿数据，进入 `ready` 只表示同一条记录可以预览和确认。旧 `draft` 表仅服务 legacy 流程，不是 V2 Proposal 的前置存储。
+
 建议新增表：
 
 ```sql
@@ -200,7 +202,7 @@ create table planner_meta (
 - 删除或重建正式表；
 - 删除 `status` 列；
 - 删除 `doing / dropped` 历史记录；
-- 把旧 Draft 自动解释为 V2 Proposal；
+- 把旧 `draft` 记录自动解释为 V2 `PlanProposal`；
 - 修改现有 Goal、Phase、Task id。
 
 ### 8.2 旧状态兼容
@@ -241,7 +243,7 @@ planner-v2-compat
   → structure
   → estimate
   → schedule
-  → ready
+  → ready（仍是同一条 Proposal，仅变为可预览、可确认）
 ```
 
 此阶段不实现：
@@ -288,6 +290,7 @@ planningFlow: legacy | staged
 关键验收：
 
 - Preview 展示的 candidate 与 commit 写入完全一致；
+- structure、estimate、schedule 和 ready 始终更新同一条 `plan_proposal`，ready 时不复制记录；
 - commit 不调用 Agent 或 LLM；
 - commit 不自动改日期或任务；
 - 属性修改按 removed + added 展示；

@@ -4,7 +4,7 @@
 >
 > 目的：冻结下一版的模块边界和依赖方向，避免在实现三阶段规划时继续向 `tools.ts`、`routes.ts` 和 React 组件堆叠业务逻辑。
 >
-> 本文只描述目标架构；当前真实实现以 [`STATE.md`](./STATE.md) 为准，业务流程以 [`NEW_PLANNING_FLOW.md`](./NEW_PLANNING_FLOW.md) 为准，数据库演进以 [`MIGRATION_V2.md`](./MIGRATION_V2.md) 为准。
+> 本文只描述目标架构；当前真实实现以源码和数据库迁移代码为准，业务流程以 [`NEW_PLANNING_FLOW.md`](./NEW_PLANNING_FLOW.md) 为准，数据库演进以 [`MIGRATION_V2.md`](./MIGRATION_V2.md) 为准。
 
 ## 1. 架构目标
 
@@ -358,7 +358,7 @@ src/
 
 ## 4. 提案模型
 
-PlanProposal 是工作流对象，不是正式业务层级。
+`PlanProposal` 是唯一的规划工作流对象，不是正式业务层级。本文中的“草稿”和“提案”指同一份 `PlanProposal`：草稿强调尚未提交，提案强调准备对正式计划产生的修改。系统不定义另一个草稿对象，也不会在 `ready` 时复制或创建另一份数据。
 
 ```ts
 interface PlanProposal {
@@ -382,11 +382,13 @@ interface PlanProposal {
 ### 4.1 完整快照语义
 
 - `baseline` 创建后不可变，表示提案开始时的正式状态；
-- `candidate` 始终保存当前完整提案快照；
+- `candidate` 始终保存同一份 `PlanProposal` 当前的完整候选计划；
 - 每次阶段提交用 `expectedRevision` 做 compare-and-set；
 - V2 第一版不保存每个历史 revision，只保存最新版本；
 - `validation` 保存当前版本的结构化校验结果；
 - Agent 得到的是当前阶段所需的裁剪上下文，GUI 按月份读取服务端 Diff。
+
+`PlanProposal` 从 `structure` 阶段开始创建并持久化。`structure → estimate → schedule` 是同一份数据逐步完整的过程；`ready` 只表示当前 revision 已可预览和确认，不产生新的 Proposal 记录。
 
 ### 4.2 草稿内身份
 
@@ -404,7 +406,7 @@ interface PlanProposal {
 - `status` 表示提案能否继续编辑、预览或提交；
 - `ready` stage 只能搭配 `awaiting_confirmation` status；
 - `committed / discarded / stale` 是终态，不能继续 advance；
-- 修改 ready 提案时先回到相应阶段并增加 revision，旧预览立即失效。
+- 修改 ready 提案时继续更新同一份 `PlanProposal`，先回到相应阶段并增加 revision，旧预览立即失效。
 
 ## 5. 三阶段执行
 
@@ -456,7 +458,7 @@ type AdvanceProposalResult =
 
 ## 6. Preview 与 Commit
 
-Host 根据 `baseline + candidate` 计算 Diff。Client 不重复实现对象匹配。
+Host 根据同一份 `PlanProposal` 的 `baseline + candidate` 计算 Diff。Diff 是派生的预览结果，不是另一份提案，也不作为独立业务对象参与三阶段状态流转；Client 不重复实现对象匹配。
 
 Preview 的月份查询只返回当前视口需要的数据：
 
@@ -606,7 +608,6 @@ src/
 4. 阶段、任务数量阈值；
 5. required 依赖是否允许安排在同一天；
 6. Proposal 的默认过期策略；
-7. ready 后用户要求修改时，是复用同一 Proposal id 还是创建 successor；
-8. 是否在第一版引入独立 DSH Subagent Reviewer，还是先由当前 Agent 自检并通过 Eval 判断效果。
+7. 是否在第一版引入独立 DSH Subagent Reviewer，还是先由当前 Agent 自检并通过 Eval 判断效果。
 
 这些决策确认前可以完成旧行为测试和纯架构边界重构，但不能开始最终 Tool Schema 与 staged flow 实现。
