@@ -14,7 +14,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test --experimental-strip-types test/*.test.ts"
+    "test": "node --experimental-strip-types --import ./test/helpers/registerTypeScriptLoader.mjs --test test/*.test.ts"
   },
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
