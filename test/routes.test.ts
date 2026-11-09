@@ -124,10 +124,17 @@ test('PUT capacity 校验、持久化并返回当前月份容量报告', async (
   }
 })
 
-test('路由拒绝非本机 Host 与跨站 Origin', async () => {
+test('路由拒绝非回环地址、非本机 Host 与跨站 Origin', async () => {
   const db = openForTest()
   const server = await createRouteHarness(db)
   try {
+    const remote = await server.request({
+      path: '/personal-planner/api/ping',
+      remoteAddress: '192.0.2.10',
+    })
+    assert.equal(remote.status, 403)
+    assert.deepEqual(remote.body, { ok: false, error: 'forbidden: loopback only' })
+
     const badHost = await server.request({
       path: '/personal-planner/api/ping',
       headers: { host: 'planner.example' },
