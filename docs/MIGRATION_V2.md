@@ -155,6 +155,16 @@
 
 Repository 不得长期返回 `unknown` JSON，也不得在解析失败时构造空 Snapshot、默认 stage/status 或空 validation。损坏记录必须返回稳定错误。
 
+阶段 4 决策门采用以下结论；这些结论先于 v3 DDL 和 Repository 实现：
+
+1. 容量变化与正式计划变化统一增加 `planner_meta.schedule_version`，不增加 `capacity_version`；
+2. `task.seq` 对已有 Phase 内任务按 `(day IS NULL), day, created_at, id` 升序稳定回填为从 1 开始的连续整数；`phase_id IS NULL` 的 legacy loose task 使用同一排序全局编号，但该编号只为兼容列完整性服务，不赋予它 V2 业务归属；
+3. 旧 Schema 没有可靠的完成事件时间，不能把 `updated_at` 当成完成时间；所有既有 Task/Phase 的 `completed_at` 初始均为 `null`。兼容读取用旧 `status = 'done'` 保留“已完成”事实，Snapshot 用独立 `isCompleted` 保留该事实；只有新路径在真实完成动作发生时写精确时间；
+4. Goal 的 `title / acceptance_criteria / deadline / status` 会影响 ready Proposal，成功变化时增加统一版本，并在 commit 时与 baseline 逐字段比较；`motivation` 不影响 Proposal，也不增加该版本；
+5. Goal/Phase `acceptance_criteria` 的 staged 契约是 trim 后 1–1000 字符；兼容列允许 `null` 表达 legacy 未补录，禁止用空字符串代替；
+6. 第一版不允许 override 超容量或超过截止日期，正式 verdict 只使用 `valid / invalid`；
+7. `PlanProposal`、两个 Snapshot、local id、ordering constraints 与 validation JSON 的准确结构以 `ARCHITECTURE_V2.md` 第 4 节为唯一类型契约，后续 Core codec、DDL 行映射和 Repository 不得另定义近似结构。
+
 ### 8.1 目标
 
 在 legacy 默认行为不变的版本中先引入 V2 所需的持久化结构。该版本是数据库升级后的安全回滚基线。
@@ -200,7 +210,9 @@ create table planner_meta (
 - `phase.acceptance_criteria`，初始可空；
 - `phase.completed_at`，初始可空；
 - `task.seq`，旧数据按现有稳定顺序回填；
-- `task.completed_at`，旧 `done` 任务按可靠历史时间回填。
+- `task.completed_at`，旧数据保持 `null`，只由迁移后的真实完成动作写入。
+
+本项目 v2 数据没有可靠的 Task/Phase 完成事件时间，因此本次迁移不做时间回填：新增的 `completed_at` 对全部旧记录保持 `null`。旧 `done` 事实继续由 legacy `status` 兼容读取并映射到 Snapshot 的 `isCompleted = true`，不得伪造时间。
 
 首个兼容迁移不得：
 
@@ -227,9 +239,9 @@ create table planner_meta (
 
 `planner_meta.schedule_version` 初始为 `0`。任何会改变正式阶段、任务内容或排期的成功事务都必须增加它。
 
-只改容量是否增加 schedule_version 需要在实现前确认；如果容量变化会使 ready Proposal 的校验失效，至少需要独立 `capacity_version` 或统一增加计划版本。
+容量成功变化统一增加 `schedule_version`。schedule validation 持久化 Candidate 涉及日期的 `limit / externalPlannedMinutes / candidatePlannedMinutes`；commit 发现版本变化后重读最新状态。若这些日期的容量输入或外部占用改变，Proposal 必须变为 `stale` 并重新预览，不能沿用旧预览静默提交；只影响无关日期的版本变化可以在复用同一确定性 Validator 重校验通过后继续。
 
-Goal 的 deadline、acceptance criteria 等会影响 Proposal 合法性的字段，也必须在实现前确定失效机制：统一增加相关版本，或在 commit 锁内逐字段比较 baseline。不能只比较 Phase/Task 而忽略 Goal 已变化。
+Goal 的 `title / acceptance_criteria / deadline / status` 成功变化同样增加 `schedule_version`，并在 commit 锁内与 baseline 逐字段比较；任一字段变化都使旧 Proposal `stale`。`motivation` 不参与 Proposal 合法性，更新它不增加版本。
 
 ### 8.4 兼容标签
 

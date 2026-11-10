@@ -427,6 +427,169 @@ interface PlanProposal {
 }
 ```
 
+上述接口在持久化层使用以下正式枚举，codec 不接受枚举外字符串：
+
+```ts
+type ProposalOperation = 'create' | 'reschedule' | 'modify' | 'replan'
+type PlanningStage = 'structure' | 'estimate' | 'schedule' | 'ready'
+type ProposalStatus = 'editing' | 'awaiting_confirmation' | 'committed' | 'discarded' | 'stale'
+```
+
+#### Snapshot v1
+
+`baseline_json` 是创建后不可变的 `PlanSnapshotV1`。它只保存目标本身的规划相关字段、该目标的 V2 可见 Phase/Task，以及兼容完成事实；legacy `dropped` 对象不进入 Snapshot，legacy `doing` 按未完成读取。
+
+```ts
+type CompletionSnapshot =
+  | { isCompleted: false; completedAt: null }
+  | { isCompleted: true; completedAt: string | null } // null 仅允许 legacy 无可靠完成时刻
+
+interface PlanSnapshotV1 {
+  schemaVersion: 1
+  goal: {
+    id: string
+    title: string
+    acceptanceCriteria: string | null // null 仅允许 legacy 未补录
+    deadline: string | null
+    status: 'active' | 'done' | 'dropped'
+  }
+  phases: Array<{
+    id: string
+    title: string
+    acceptanceCriteria: string | null
+    seq: number
+    completion: CompletionSnapshot
+    tasks: Array<{
+      id: string
+      title: string
+      priority: 'P0' | 'P1' | 'P2'
+      estMinutes: number
+      day: string | null
+      seq: number
+      completion: CompletionSnapshot
+      actualMinutes: number | null
+      note: string | null
+    }>
+  }>
+}
+```
+
+`candidate_json` 是 `ProposalSnapshotV1`。`contentStage` 是当前已持久化内容的完整度，不等同于 `PlanProposal.stage`（后者表示下一步允许提交什么）。字段必须按 discriminated union 严格出现：structure 不得含 `estMinutes/day`，estimate 必须含 `estMinutes` 且不得含 `day`，schedule 必须同时含两者。`ready` 只允许 `contentStage = 'schedule'`。
+
+```ts
+interface ProposalPhaseBase<TaskShape> {
+  localId: PhaseLocalId
+  sourcePhaseId: string | null
+  title: string
+  acceptanceCriteria: string
+  seq: number
+  completion: CompletionSnapshot
+  tasks: TaskShape[]
+}
+
+interface ProposalTaskBase {
+  localId: TaskLocalId
+  sourceTaskId: string | null
+  title: string
+  priority: 'P0' | 'P1' | 'P2'
+  seq: number
+  completion: CompletionSnapshot
+}
+
+type StructureTask = ProposalTaskBase
+type EstimateTask = ProposalTaskBase & { estMinutes: number }
+type ScheduleTask = ProposalTaskBase & { estMinutes: number; day: string }
+
+type ProposalSnapshotV1 =
+  | { schemaVersion: 1; contentStage: 'structure'; phases: Array<ProposalPhaseBase<StructureTask>> }
+  | { schemaVersion: 1; contentStage: 'estimate'; phases: Array<ProposalPhaseBase<EstimateTask>> }
+  | { schemaVersion: 1; contentStage: 'schedule'; phases: Array<ProposalPhaseBase<ScheduleTask>> }
+```
+
+删除通过“baseline 中有、candidate 中无”表达，不引入 tombstone。`sourcePhaseId/sourceTaskId` 连接 baseline 正式对象；新对象对应值必须为 `null`。completed 对象在允许保留它们的场景中保持同一 source id、local id 和内容，具体不可变范围在阶段 7 场景决策中冻结。
+
+#### 稳定 local id 与 ordering constraints
+
+所有 Candidate Phase/Task（包括从 baseline 复制的对象）都由 Host 分配一次 local id，并在 Proposal 全生命周期内保持不变。格式分别为 canonical lowercase UUID 前加 `plp_` 与 `plt_`，即 `plp_550e8400-e29b-41d4-a716-446655440000` 和 `plt_...`。Agent 只能引用已有 local id，不能提供、替换或按标题生成 id。Codec 必须拒绝格式错误、重复、source id 重复、Task source 与 Phase source 归属矛盾。
+
+```ts
+type PhaseLocalId = `plp_${string}`
+type TaskLocalId = `plt_${string}`
+
+interface OrderingConstraint {
+  predecessorTaskLocalId: TaskLocalId
+  successorTaskLocalId: TaskLocalId
+  strength: 'required' | 'preferred'
+  reason: string // trim 后 1–500 字符
+}
+```
+
+约束只能引用同一 Candidate 中两个不同 Task；重复边、required 环和悬空引用是损坏或确定性校验错误。结构变化使全部 ordering constraints 失效；只改日期时复用并重检现有约束。
+
+#### validation_json v1
+
+第一版不允许容量或截止日期 override，因此 verdict 只有 `valid / invalid`。初建 Proposal 尚未校验不是空 validation 或解析 fallback，而是显式、带 revision 的 `pending` 分支。
+
+```ts
+type ProposalValidationCode =
+  | 'STRUCTURE_FIELD_FORBIDDEN' | 'STRUCTURE_COUNT' | 'STRUCTURE_EMPTY_PHASE'
+  | 'STRUCTURE_SEQUENCE' | 'STRUCTURE_DUPLICATE_LOCAL_ID' | 'STRUCTURE_DUPLICATE_ITEM'
+  | 'ESTIMATE_IDENTITY_CHANGED' | 'ESTIMATE_MISSING' | 'ESTIMATE_INCREMENT' | 'ESTIMATE_RANGE'
+  | 'SCHEDULE_IDENTITY_CHANGED' | 'SCHEDULE_DATE_FORMAT' | 'SCHEDULE_DEADLINE'
+  | 'SCHEDULE_DEPENDENCY_CYCLE' | 'SCHEDULE_REQUIRED_ORDER' | 'SCHEDULE_CAPACITY'
+  | 'SNAPSHOT_REFERENCE_INVALID'
+
+interface ProposalValidationIssue {
+  code: ProposalValidationCode
+  stage: 'structure' | 'estimate' | 'schedule'
+  message: string
+  phaseLocalId: PhaseLocalId | null
+  taskLocalId: TaskLocalId | null
+  day: string | null
+}
+
+interface CapacityValidationDay {
+  day: string
+  limitMinutes: number
+  externalPlannedMinutes: number
+  candidatePlannedMinutes: number
+}
+
+type OrderingValidation =
+  | { state: 'not_applicable' }
+  | { state: 'complete'; constraints: OrderingConstraint[] }
+
+type CapacityValidation =
+  | { state: 'not_applicable' }
+  | { state: 'checked'; days: CapacityValidationDay[] }
+
+type ProposalValidationV1 =
+  | {
+      schemaVersion: 1
+      state: 'pending'
+      candidateRevision: number
+      requiredStage: 'structure' | 'estimate' | 'schedule'
+    }
+  | {
+      schemaVersion: 1
+      state: 'evaluated'
+      candidateRevision: number
+      contentStage: 'structure' | 'estimate' | 'schedule'
+      verdict: 'valid' | 'invalid'
+      issues: ProposalValidationIssue[]
+      ordering: OrderingValidation
+      capacity: CapacityValidation
+      validatedAt: string
+      scheduleVersion: number
+    }
+```
+
+`candidateRevision` 必须等于所属 Proposal 的 `revision`；`contentStage` 必须等于当前 candidate 的 discriminant。失败的 advance 输入不替换已持久化 candidate，也不把针对被拒绝输入的 validation 伪装成当前 candidate 的结果；失败 issue 直接作为命令结果返回。`schedule` 的有效结果必须具有 `ordering.state = 'complete'` 和 `capacity.state = 'checked'`。
+
+#### 严格 JSON codec
+
+阶段 4.3 在 Core 为三个 JSON 列分别提供版本化 encode/decode。decoder 的边界输入可以是 `unknown`，但成功后只返回上述正式类型；`unknown` 不得穿透到 Repository/Service。Codec 必须递归拒绝未知键、缺失键、非法枚举、非有限整数、错误 nullability、非法日期/UUID、重复 local/source id 和跨引用错误；不得补默认 stage/status/revision、空 Snapshot、空 validation 或静默忽略字段。JSON 语法错误与契约损坏统一映射为带列名和 Proposal id 的稳定 `PROPOSAL_DATA_CORRUPT` 持久化错误，同时保留底层 cause。
+
 ### 4.1 完整快照语义
 
 - `baseline` 创建后不可变，表示提案开始时的正式状态；
@@ -655,11 +818,9 @@ src/
 以下问题不影响模块边界，但会阻塞具体 Tool Schema 或业务实现：
 
 1. 四个场景入口 Tool 与单一 `planner_plan_start(operation)` 哪个在 Tool Eval 中更可靠；
-2. 超容量和超过截止日期是否允许用户 override；
-3. `decision_required` 的具体结构和 GUI 表达；
-4. 阶段、任务数量阈值；
-5. required 依赖是否允许安排在同一天；
-6. Proposal 的默认过期策略；
-7. 是否在第一版引入独立 DSH Subagent Reviewer，还是先由当前 Agent 自检并通过 Eval 判断效果。
+2. 阶段、任务数量阈值；
+3. required 依赖是否允许安排在同一天；
+4. Proposal 的默认过期策略；
+5. 是否在第一版引入独立 DSH Subagent Reviewer，还是先由当前 Agent 自检并通过 Eval 判断效果。
 
 这些决策确认前可以完成旧行为测试和纯架构边界重构。会影响 `PlanProposal`、Snapshot、validation 或 Schema 字段的决策必须在阶段 4 定义类型和 DDL 前确认；其余决策最迟在最终 Tool Schema 与 staged flow 实现前确认。

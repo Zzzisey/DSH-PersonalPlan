@@ -59,6 +59,13 @@ Goal 目标
 | `deadline` | 目标截止日期，可选 |
 | `status` | `active / done / dropped` |
 
+V2 对 `acceptance_criteria` 使用以下正式契约：
+
+- staged 路径创建或更新 Goal 时必须提供；值在去除首尾空白后必须为 1–1000 个字符，内部换行和空白保留；
+- v3 兼容迁移允许旧 Goal 暂时为 `null`，`null` 只表示“legacy 数据尚未补录”，不得写成空字符串；
+- acceptance criteria 为 `null` 的旧 Goal 不能开始 staged Proposal，必须先由用户补录；
+- `title / acceptance_criteria / deadline / status` 是会影响 Proposal 的规划字段；`motivation` 不是确定性校验或提交冲突字段。
+
 状态含义：
 
 - `active`：仍在追求这个结果；可以尚未规划、规划中或执行中；
@@ -98,6 +105,8 @@ Goal 目标
 | `acceptance_criteria` | 做到什么算该里程碑完成 |
 | `seq` | 在目标中的逻辑顺序 |
 | `completed_at` | 空值表示未完成，有值表示已验收完成 |
+
+V2 对 Phase 的 `acceptance_criteria` 采用与 Goal 相同的 1–1000 字符、去除首尾空白契约。新 Candidate Phase 必须具有非空验收标准；兼容迁移后的旧 Phase 可以暂时为 `null`，直到进入 staged 修改或重新规划时补齐。
 
 阶段不再使用 `planned / active / dropped`。未完成且在重新规划后不再需要的阶段直接删除；已完成阶段保留。
 
@@ -351,17 +360,12 @@ Agent 按 System Prompt + Skill 评审排期语义
 
 已确认不再使用 `warn`。轻微建议由对话智能体作为附加说明表达，不进入正式 verdict。
 
+第一版不允许用户 override 超容量或超过截止日期。两者都是阻止 Proposal 进入 `ready` 的确定性错误，Agent 必须修改排期后重新提交；因此第一版正式 validation verdict 只有 `valid / invalid`，不定义 `requires_override` 或 `needs_decision`。硬性错误同样始终不能确认提交。
+
 用户面对最终预览始终只有两个核心动作：
 
 - 确认：提交；
 - 取消并修改：不提交，继续让 AI 修改提案。
-
-仍需确定是否允许用户主动接受超容量、超过截止日期等软限制：
-
-- 如果不允许：校验失败后必须自动重排，不需要 `needs_decision`；
-- 如果允许：建议用 `requires_override` 表示“必须明确接受风险后才能提交”，而不是提供复杂的多选决策。
-
-硬性错误始终不能确认提交。
 
 LLM 超时、输出无法解析、数据库繁忙和并发冲突属于工具运行状态，不属于计划 verdict。
 
@@ -550,6 +554,8 @@ LLM 超时、输出无法解析、数据库繁忙和并发冲突属于工具运�
 - 当前提案快照；
 - 所属对话。
 
+容量与正式计划共用全局 `schedule_version`。容量规则、正式 Phase/Task，或 Goal 的 `title / acceptance_criteria / deadline / status` 成功变化时版本只增加一次；只改 `motivation` 不增加。版本变化是提交时必须重新读取和比较的信号，不代表所有 Proposal 一律冲突：只有目标基线、Candidate 涉及日期的容量/外部占用或其他确定性约束实际变化时才使旧预览 `stale`。容量变化不得在沿用旧预览的情况下静默提交。
+
 ### 9.1 正常提交
 
 ```text
@@ -626,6 +632,8 @@ A 先提交后，B 的旧预览不能直接覆盖最新状态。
 - 旧 `draft / check_log` 在兼容期保留，不自动转换成 V2 `PlanProposal`；
 - `setting` 或独立元数据位置保存全局 `schedule_version`。
 
+v3 采用 `planner_meta.schedule_version`，不另设 `capacity_version`。Proposal 的 schedule validation 会持久化 Candidate 涉及日期的容量检查输入与结果，使 commit 能区分无关版本变化和会改变预览的容量变化。
+
 正式 `task.est_minutes` 可以继续保持非空，因为只有三段流程全部完成后才创建正式任务。第一段中缺失的时长和日期只存在于 `PlanProposal.candidate` 中。
 
 旧数据迁移至少需要处理：
@@ -685,17 +693,14 @@ Skill 直接进入当前 DSH Agent 的上下文，不需要再传给工具内部
 以下内容需要继续讨论后才能进入实现：
 
 1. 阶段数量上下限、每阶段任务数量等结构阈值；
-2. 目标和阶段验收标准的具体字段契约；
-3. 用户是否可以接受超容量、超过截止日期等软限制；
-4. 是否保留 `needs_decision` 名称，还是改为 `requires_override`；
-5. 同一天的硬依赖是允许并附加说明，还是必须拆到不同日期；
-6. 场景化工具的精确参数和结构化返回 schema；
-7. 日历月份预览 API 的精确数据结构；
-8. 提案过期时间和页面刷新后的恢复行为；
-9. DSH Agent 的三段提示词、工具重试上限、失败降级和 Eval 标准；
-10. 业务 Skill 的选择、版本记录和注入机制；
-11. 旧数据迁移时 `doing/dropped` 的具体转换方式；
-12. 重新规划时“保留未完成阶段并替换任务”的准确匹配规则。
+2. 同一天的硬依赖是允许并附加说明，还是必须拆到不同日期；
+3. 场景化工具的精确参数和结构化返回 schema；
+4. 日历月份预览 API 的精确数据结构；
+5. 提案过期时间和页面刷新后的恢复行为；
+6. DSH Agent 的三段提示词、工具重试上限、失败降级和 Eval 标准；
+7. 业务 Skill 的选择、版本记录和注入机制；
+8. 旧数据迁移时 `doing/dropped` 在最终移除 legacy 状态列时的具体物理转换方式；
+9. 重新规划时“保留未完成阶段并替换任务”的准确匹配规则。
 
 ## 14. 建议实施顺序
 

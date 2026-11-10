@@ -182,17 +182,15 @@ npm run build  通过
 
 ### 4.1 阶段 4 前必须确认
 
-1. 容量变化的版本策略：
-   - 统一增加 `schedule_version`；或
-   - 新增独立 `capacity_version`。
-2. `task.seq` 对旧数据采用哪一种稳定回填顺序；
-3. 旧 `done` Task/Phase 的 `completed_at` 是否有可靠历史时间；没有可靠来源时不得伪造精确时间。
-4. 哪些 Goal 字段会影响 ready Proposal，以及 Goal 更新通过统一版本计数还是 baseline 字段比较使旧 Proposal 失效。
-5. Goal/Phase `acceptance_criteria` 的字段契约；
-6. 是否允许用户 override 超容量或超过截止日期；若允许，最终 validation verdict 使用 `requires_override` 还是其他结构；
-7. PlanSnapshot、ProposalSnapshot、local id、ordering constraints 与 validation JSON 的准确持久化结构。
+本决策门已冻结，结论分别写入三份权威文档：
 
-默认建议是第一版让容量变化统一增加 `schedule_version`，实现更简单且不会让 ready Proposal 在容量变化后继续被静默提交；该建议必须经确认后才能成为实现规则。
+1. 容量与正式计划变化统一增加 `schedule_version`，不新增 `capacity_version`；
+2. `task.seq` 按 `(day IS NULL), day, created_at, id` 稳定回填；
+3. 旧 Schema 没有可靠完成时间，既有 `completed_at` 保持 `null`，以旧 status 和 Snapshot `isCompleted` 保留完成事实；
+4. Goal 的 `title / acceptance_criteria / deadline / status` 影响 ready Proposal，统一增加版本并与 baseline 逐字段比较；
+5. Goal/Phase `acceptance_criteria` 在 staged 路径为 trim 后 1–1000 字符，legacy 兼容列可为 `null`；
+6. 第一版不允许 override 超容量或超过截止日期，validation verdict 仅为 `valid / invalid`；
+7. PlanProposal、Snapshot、local id、ordering constraints、validation JSON 与严格 codec 契约见 `ARCHITECTURE_V2.md` 第 4 节。
 
 阶段 4 决策门只有在结论已经写回对应权威文档后才算完成；口头确认不能直接进入类型、Schema 或 Repository 实现。
 
@@ -302,7 +300,7 @@ npm run build  通过
 
 工作：
 
-- 按已确认策略维护 `schedule_version` 与可选 `capacity_version`；
+- 按已确认策略维护统一的 `schedule_version`；
 - 所有改变正式 Phase/Task 内容或排期的成功事务只增加一次版本；
 - 对会影响 Proposal 有效性的 Goal 字段，按阶段 4 决策采用统一版本增加或 baseline 冲突检查；
 - 事务失败时版本不得增加；
@@ -493,7 +491,7 @@ npm run build  通过
 ```text
 事务外预检查 id / owner / revision / ready
   → BEGIN IMMEDIATE
-  → 事务内重新检查 owner / revision / status / schedule_version / capacity_version
+  → 事务内重新检查 owner / revision / status / schedule_version
   → 读取最新版本和受影响正式对象
   → 检查 baseline 是否仍可应用
   → 按最新正式日历重跑确定性校验
