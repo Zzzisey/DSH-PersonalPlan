@@ -39,7 +39,7 @@ Calendar Client ── Host API ──▶ PlannerService
                          │                 │
                          └────────┬────────┘
                                   ▼
-                         PlannerRepository
+                          db/repo.ts
                                   │
                                   ▼
                                SQLite
@@ -52,9 +52,9 @@ Client / DSH Tool / HTTP Route
               ↓
         PlannerService
           ↙       ↘
-       Core      Repository interface
-                        ↑
-                SQLite implementation
+       Core       db/repo.ts
+                       ↓
+                    SQLite
 ```
 
 禁止的依赖：
@@ -62,7 +62,7 @@ Client / DSH Tool / HTTP Route
 - Core 依赖 Cordis、DSH、SQLite、HTTP 或 React；
 - Tool、Route、React 组件直接执行 SQL；
 - Route 或 Tool 各自实现容量、提案推进或提交规则；
-- Repository 决定业务状态如何流转；
+- `db/repo.ts` 决定业务状态如何流转；
 - commit 调用 Agent、LLM 或修改用户尚未预览的候选方案。
 
 ## 3. 模块职责
@@ -154,48 +154,57 @@ PlannerService 负责：
 - 组织提交事务；
 - 产生 Client 和 Tool 所需的结构化结果。
 
-少量简单 Goal/Task 方法在迁移期可以只是 Repository 转发；它们仍提供 Tool 与 Route 的统一入口。不要为了消除一行转发让 Adapter 直接访问数据库，也不要继续增加 Manager、Gateway 或第二层 Service。真正的业务编排集中在 Proposal、Preview、Commit 等用例中。
+少量简单 Goal/Task 方法可以只是 `db/repo.ts` 转发；它们仍提供 Tool 与 Route 的统一入口。不要继续增加 Repository 接口、Adapter、Manager、Gateway 或第二层 Service。真正的业务编排集中在 Proposal、Preview、Commit 等用例中。
 
 文件功能范围：
 
 | 文件 | 负责 |
 |---|---|
-| `src/host/planner-service.ts` | 实现 Goal、Proposal、Calendar、Task、Capacity 用例，加载上下文，调用 Core，协调 Repository，检查 Session、revision 与 schedule version，并返回结构化业务结果 |
+| `src/host/planner-service.ts` | 实现 Goal、Proposal、Calendar、Task、Capacity 用例，加载上下文，调用 Core 和 `db/repo.ts`，检查 Session、revision 与 schedule version，并返回结构化业务结果 |
 
-### 3.3 Repository
+### 3.3 数据访问
 
-`PlannerRepository` 是 PlannerService 与 SQLite 之间的窄接口。它的目的不是预设将来一定换数据库，而是隔离 SQL、事务和迁移细节，支持 Service 单测。
+`src/db/repo.ts` 是 PlannerService 与 SQLite 之间唯一的数据访问模块。它导出绑定数据库连接的对象以及由工厂返回值推导出的 `PlannerRepo` 类型，不再手写一份内容重复的 Repository 接口。
 
-最终只保留一个 SQLite 运行时数据访问实现；DDL 仍单独放在 Schema：
+```ts
+export function createPlannerRepo(db: DatabaseSync) {
+  return {
+    createGoal(input: CreateGoalInput) { /* SQL */ },
+    getGoal(id: string) { /* SQL */ },
+    transaction<T>(fn: () => T) { /* SQLite transaction */ },
+  }
+}
+
+export type PlannerRepo = ReturnType<typeof createPlannerRepo>
+```
+
+最终结构：
 
 ```text
-src/
-├── host/
-│   └── repository.ts
-└── db/
-    ├── repo.ts
-    └── schema.ts
+src/db/
+├── repo.ts
+└── schema.ts
 ```
 
 文件功能范围：
 
 | 文件 | 负责 |
 |---|---|
-| `src/host/repository.ts` | 定义 PlannerRepository 接口、查询条件、事务输入输出和持久化错误类型，供 Service 与测试实现依赖 |
-| `src/db/repo.ts` | 唯一 SQLite Repository 实现，导出绑定数据库连接的 `PlannerRepository` 对象，负责运行时查询/写入、行映射、条件写入、事务和 SQLite 错误归一化 |
+| `src/db/repo.ts` | 导出 `createPlannerRepo(db)` 与推导出的 `PlannerRepo` 类型，负责运行时查询/写入、行映射、条件写入、事务和 SQLite 错误归一化 |
 | `src/db/schema.ts` | 定义 schema version、DDL、向前迁移、数据库打开参数和迁移完整性检查 |
 
-当前 `SqlitePlannerRepository → db/repo.ts` 的逐方法转发只属于阶段三的过渡脚手架。阶段四在不改变行为的独立提交中把装配收敛到 `db/repo.ts`，删除纯转发类；不能让新 Proposal 数据访问与旧数据访问分散在两个 Repository 实现中。
+当前 `PlannerRepository + SqlitePlannerRepository → db/repo.ts` 只属于阶段三的过渡脚手架。阶段四在不改变行为的独立提交中删除接口和纯转发类，PlannerService 直接接收 `createPlannerRepo(db)` 的返回对象。
 
-Repository 负责：
+`db/repo.ts` 负责：
 
 - Goal、Phase、Task、Proposal 的持久化；
 - 按范围查询任务和容量占用；
 - revision 条件更新；
-- `BEGIN IMMEDIATE` 提交事务；
-- schema migration。
+- `BEGIN IMMEDIATE` 提交事务。
 
-Repository 返回业务数据，不返回面向用户的自然语言错误。并发、约束和缺失记录使用稳定错误类型交给 Service 解释。
+`db/repo.ts` 返回业务数据，不返回面向用户的自然语言错误。并发、约束和缺失记录使用稳定错误类型交给 Service 解释。
+
+测试默认使用 `DatabaseSync(':memory:')` 和真实 `db/repo.ts`，直接覆盖 SQL、约束与事务；多连接锁使用临时文件数据库。只有确实需要模拟无法稳定制造的技术失败时，才在单个测试中使用 TypeScript 结构类型替身，不为此维护全局 Fake Repository。
 
 ### 3.4 DSH Tools
 
@@ -344,7 +353,7 @@ src/
 
 | 文件 | 负责 |
 |---|---|
-| `src/index.ts` | 声明 Cordis inject，创建 SQLite Repository 和 PlannerService，注册 Prompt、Tools、Routes 与 disposer，并显式报告启动失败；只按已配置的 `planningFlow` 装配对应工具，不做静默 fallback |
+| `src/index.ts` | 声明 Cordis inject，通过 `createPlannerRepo(db)` 创建数据访问对象和 PlannerService，注册 Prompt、Tools、Routes 与 disposer，并显式报告启动失败；只按已配置的 `planningFlow` 装配对应工具，不做静默 fallback |
 | `src/host/config.ts` | 定义插件配置类型、默认值和启动期校验，包括数据库路径、`planningFlow` 等部署选项 |
 
 ### 3.9 失败、校验、重试与兼容边界
@@ -371,7 +380,7 @@ src/
 | Tool / HTTP Adapter | 传输格式、基础类型、身份提取和协议映射 |
 | PlannerService | 用例编排、所有权、revision、版本和事务边界 |
 | Core Validator | 阶段字段、状态转换、容量、依赖、Diff 等确定性业务规则 |
-| Repository / SQLite | SQL、约束、条件写入、事务和错误归一化 |
+| `db/repo.ts` / SQLite | SQL、约束、条件写入、事务和错误归一化 |
 | DSH Agent | 生成、语义判断和按 Tool 结果修订 |
 
 Tool Schema、Prompt 和 GUI 可以表达同一规则，但不能各自复制一份业务校验实现。advance 与 commit 必须复用同一个 Core Validator；commit 在最新正式状态上重跑属于再次调用同一权威实现，不是复制规则。
@@ -567,7 +576,7 @@ type ProposalValidationV1 =
 
 #### 严格 JSON codec
 
-阶段 4.3 在 Core 为三个 JSON 列分别提供版本化 encode/decode。decoder 的边界输入可以是 `unknown`，但成功后只返回上述正式类型；`unknown` 不得穿透到 Repository/Service。Codec 负责 JSON 结构、未知/缺失键、基础类型、枚举、有限整数、日期和 nullability；local/source id 唯一性、阶段字段规则和跨引用只由 Core Validator 实现，不能在 codec 再复制一套业务校验。Codec 不补默认 stage/status/revision、空 Snapshot、空 validation，也不静默忽略字段。JSON 语法或结构损坏映射为带列名和 Proposal id 的稳定 `PROPOSAL_DATA_CORRUPT`，并保留底层 cause。
+阶段 4.3 在 Core 为三个 JSON 列分别提供版本化 encode/decode。decoder 的边界输入可以是 `unknown`，但成功后只返回上述正式类型；`unknown` 不得穿透到 `db/repo.ts` 或 Service。Codec 负责 JSON 结构、未知/缺失键、基础类型、枚举、有限整数、日期和 nullability；local/source id 唯一性、阶段字段规则和跨引用只由 Core Validator 实现，不能在 codec 再复制一套业务校验。Codec 不补默认 stage/status/revision、空 Snapshot、空 validation，也不静默忽略字段。JSON 语法或结构损坏映射为带列名和 Proposal id 的稳定 `PROPOSAL_DATA_CORRUPT`，并保留底层 cause。
 
 ### 4.1 完整快照语义
 
@@ -745,7 +754,6 @@ src/
 ├── host/
 │   ├── config.ts
 │   ├── planner-service.ts
-│   ├── repository.ts
 │   └── prompt.ts
 ├── db/
 │   ├── repo.ts
@@ -770,7 +778,7 @@ src/
 `src/index.ts` 最终只负责装配与生命周期：
 
 ```text
-创建 SQLite Repository
+创建绑定 SQLite 的 PlannerRepo 对象
   → 创建 PlannerService
   → 注册 Prompt
   → 注册 Tools

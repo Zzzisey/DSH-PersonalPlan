@@ -113,9 +113,9 @@
 结果：
 
 - Tool 与 Route 不再直接导入 SQLite Repo；
-- PlannerService 可以使用非 SQLite 测试 Repository；
-- SQLite、SQL 与事务细节被限制在 Repository 实现中；
-- `src/index.ts` 负责 Repository、Service、Tools、Routes 与 Prompt 的装配；
+- 阶段三曾用非 SQLite Fake 验证 Service 边界；阶段四将改为以内存 SQLite 为默认测试方式；
+- 阶段三把 SQLite、SQL 与事务细节限制在 Repository 实现中；
+- 阶段三的 `src/index.ts` 负责 Repository、Service、Tools、Routes 与 Prompt 的装配；
 - 旧 Judge/Reschedule 被隔离为 legacy 路径，尚未删除；
 - legacy Draft 方法仍是迁移兼容代码，不是 V2 PlanProposal 实现。
 
@@ -149,7 +149,7 @@ npm run build  通过
 | 伪造默认值 | 查询/解析/迁移失败不能返回 `0`、`[]`、空对象或默认容量；只有已确认“值确实缺省”时才能使用业务默认值 |
 | 过度空值检查 | Adapter 一次性解析输入；内部必需字段使用非可空类型，契约损坏显式失败，不用 `?.`、`?? 0`、`?? []` 掩盖 |
 | 不必要的兼容分支 | 只支持项目声明的运行时；legacy 只作为阶段性开关，不为未知旧版本增加 fallback |
-| 重复校验 | Adapter 校验协议，Core 校验业务，Repository 保证存储；advance 与 commit 复用同一 Validator 实现 |
+| 重复校验 | Adapter 校验协议，Core 校验业务，`db/repo.ts` 保证存储；advance 与 commit 复用同一 Validator 实现 |
 | 过度重试 | 只重试有上限、可观测且证明幂等的瞬时故障；业务错误、revision 冲突和硬性失败不自动重试 |
 | 假成功 | 只有事务提交完成才返回成功；回滚、部分写入、版本冲突和数据库 busy 必须返回失败 |
 | 过度验证 | 每个小请求跑与改动相称的定向检查；仅在阶段合并、Schema/并发高风险点或发布门运行完整矩阵 |
@@ -192,7 +192,7 @@ npm run build  通过
 6. 第一版不允许 override 超容量或超过截止日期，validation verdict 仅为 `valid / invalid`；
 7. PlanProposal、Snapshot、local id、ordering constraints、validation JSON 与严格 codec 契约见 `ARCHITECTURE_V2.md` 第 4 节。
 
-阶段 4 决策门只有在结论已经写回对应权威文档后才算完成；口头确认不能直接进入类型、Schema 或 Repository 实现。
+阶段 4 决策门只有在结论已经写回对应权威文档后才算完成；口头确认不能直接进入类型、Schema 或数据访问实现。
 
 ### 4.2 阶段 5 前必须确认
 
@@ -239,18 +239,19 @@ npm run build  通过
 
 验收：只改测试与 fixture，现有实现仍通过全部测试。
 
-### 请求 4.2：收敛唯一 SQLite Repository 实现
+### 请求 4.2：收敛为单一 SQLite 数据访问模块
 
-建议提交：`refactor(storage): consolidate sqlite repository implementation`
+建议提交：`refactor(storage): simplify sqlite data access`
 
 工作：
 
-- 保留 `PlannerRepository` 作为 PlannerService 的轻量测试边界；
-- 让 `src/db/repo.ts` 直接导出绑定数据库连接的 Repository 对象，删除 `SqlitePlannerRepository → db/repo.ts` 的纯转发类；
+- 删除手写 `PlannerRepository` 接口和 `src/host/repository.ts`；
+- 让 `src/db/repo.ts` 导出 `createPlannerRepo(db)` 与从返回值推导的 `PlannerRepo` 类型，删除 `SqlitePlannerRepository → db/repo.ts` 的纯转发类；
+- PlannerService 直接接收 `PlannerRepo` 对象，不接收 `DatabaseSync`；
 - 运行时查询/写入只由 `src/db/repo.ts` 实现，DDL 只由 `src/db/schema.ts` 实现；
 - 保持 `user_version = 2`、DDL、事务和全部用户行为不变，不夹带 Proposal 类型或 v3 Schema。
 
-验收：纯接线提交，PlannerService 仍可注入 fake Repository，外部行为和数据库字节语义不变。
+验收：纯接线提交；Service/Repo 测试默认使用内存 SQLite，多连接锁使用临时文件数据库；只有特殊技术失败使用局部结构类型替身。外部行为和数据库字节语义不变。
 
 ### 请求 4.3：先定义 Proposal 类型与持久化契约
 
@@ -263,7 +264,7 @@ npm run build  通过
 - Candidate 使用一套完整 Task 结构，显式保留 `completion / actualMinutes / note`，未估时或未排期分别使用业务含义明确的 `null`；
 - Agent 的 structure/estimate/schedule Command DTO 与持久化 Candidate 分离，Host 校验后合并，失败输入不写入；
 - 明确 `stage`、`status`、`operation` 与 revision 的类型，但本请求不实现状态转换；
-- Core 提供不依赖 SQLite 的纯 JSON codec；Host Repository 边界声明 Row 映射责任，Core 不导入 SQLite 类型；
+- Core 提供不依赖 SQLite 的纯 JSON codec；`db/repo.ts` 负责 Row 映射，Core 不导入 SQLite 类型；
 - JSON 列解析失败、必需字段缺失或枚举非法时返回稳定的损坏数据错误；
 - 禁止用 `unknown` 长期穿透到 Service，禁止用空 Snapshot、默认 stage/status 或空 validation 兜底。
 
@@ -284,19 +285,19 @@ npm run build  通过
 
 验收：空库、v1、v2 均能升级到 v3，重复打开幂等，旧 id 与数据保持不变；没有可靠完成时间时保留 `null`，不得伪造时间。
 
-### 请求 4.5：增加 Proposal Repository 持久化接口
+### 请求 4.5：增加 Proposal 数据访问操作
 
 建议提交：`feat(storage): add proposal repository operations`
 
 工作：
 
-- 在请求 4.2 的唯一 SQLite 实现中，使用请求 4.3 已定义的类型与 codec，增加 PlanProposal 的创建、按 id/owner 查询和状态查询；
+- 在请求 4.2 的 `db/repo.ts` 中，使用请求 4.3 已定义的类型与 codec，增加 PlanProposal 的创建、按 id/owner 查询和状态查询；
 - 增加 `expectedRevision` 条件更新；
 - 增加终态保护所需的条件写入；
 - 增加 schedule/capacity 版本读取；
-- Repository 返回结构化数据或稳定持久化错误，不返回用户文案。
+- `db/repo.ts` 返回结构化数据或稳定持久化错误，不返回用户文案。
 
-验收：Repository 单测覆盖成功、owner 不匹配、revision 冲突、记录不存在、终态拒绝和损坏 JSON；不得把失败伪装成空 Proposal。
+验收：`db/repo.ts` 测试覆盖成功、owner 不匹配、revision 冲突、记录不存在、终态拒绝和损坏 JSON；不得把失败伪装成空 Proposal。
 
 ### 请求 4.6：接入正式计划版本计数
 
@@ -330,8 +331,8 @@ npm run build  通过
 
 - 默认仍为 legacy；
 - 没有 staged Tool 暴露；
-- PlannerService 与 Repository 接口保留，但运行时数据访问只有 `src/db/repo.ts` 一个实现位置，不再存在纯转发 Adapter；
-- Proposal 类型与严格 codec 先于 Schema/Repository 实现，不存在第二套存储专用业务类型；
+- PlannerService 保留，但显式 Repository 接口和纯转发 Adapter 已删除；运行时数据访问只有 `src/db/repo.ts`；
+- Proposal 类型与严格 codec 先于 Schema/数据访问实现，不存在第二套存储专用业务类型；
 - v3 是只增不删的兼容迁移；
 - `draft/check_log` 完整保留；
 - `npm test`、`npm run check`、`npm run build` 全部通过；

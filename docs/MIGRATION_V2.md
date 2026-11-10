@@ -125,8 +125,8 @@
 先用 Service 包住旧逻辑，再迁移入口：
 
 ```text
-旧 Tool → PlannerService legacy command → Repository
-旧 Route → PlannerService query/command → Repository
+旧 Tool → PlannerService legacy command → 阶段三 Repository
+旧 Route → PlannerService query/command → 阶段三 Repository
 ```
 
 推荐顺序：
@@ -142,22 +142,24 @@
 验收：
 
 - 用户行为不变；
-- PlannerService 可以使用测试 Repository；
+- PlannerService 可以使用阶段三的测试 Repository；
 - Tool / Route 只负责协议转换；
-- 数据库事务仍由 Repository 实现；
-- `src/index.ts` 只装配 Repository、Service、Tools、Routes 和 Prompt。
+- 数据库事务仍由阶段三的 Repository 实现；
+- `src/index.ts` 只装配阶段三 Repository、Service、Tools、Routes 和 Prompt。
 
 ## 8. 阶段 4：兼容 Schema（候选 `user_version = 3`）
 
 ### 8.0 类型先于存储实现
 
-在编写 v3 DDL 和 Proposal Repository 之前，先解决会改变持久化结构的业务决策，再在 Core 定义 `PlanProposal`、Snapshot、稳定 local id、ordering constraints、validation 与 JSON 持久化类型，并定义严格 codec。阶段 4 只冻结数据契约，不实现阶段状态机；状态转换在阶段 5 完成。
+在编写 v3 DDL 和 Proposal 数据访问之前，先解决会改变持久化结构的业务决策，再在 Core 定义 `PlanProposal`、Snapshot、稳定 local id、ordering constraints、validation 与 JSON 持久化类型，并定义严格 codec。阶段 4 只冻结数据契约，不实现阶段状态机；状态转换在阶段 5 完成。
 
-Repository 不得长期返回 `unknown` JSON，也不得在解析失败时构造空 Snapshot、默认 stage/status 或空 validation。损坏记录必须返回稳定错误。
+`db/repo.ts` 不得长期返回 `unknown` JSON，也不得在解析失败时构造空 Snapshot、默认 stage/status 或空 validation。损坏记录必须返回稳定错误。
 
-阶段三的 `SqlitePlannerRepository → db/repo.ts` 只是为了先建立调用边界。阶段四在新增 Proposal 数据访问前先做一个不改变行为的收敛提交：保留 `PlannerRepository` 接口供 Service 单测，删除纯转发类，由 `src/db/repo.ts` 直接提供唯一 SQLite Repository 实现；DDL 继续由 `src/db/schema.ts` 单独负责。不得同时保留两套运行时数据访问实现。
+阶段三的 `PlannerRepository + SqlitePlannerRepository → db/repo.ts` 只是为了先建立调用边界。阶段四在新增 Proposal 数据访问前先做一个不改变行为的收敛提交：删除手写接口和纯转发类，由 `src/db/repo.ts` 导出 `createPlannerRepo(db)` 以及从返回值推导的 `PlannerRepo` 类型；PlannerService 直接接收该对象。DDL 继续由 `src/db/schema.ts` 单独负责。
 
-阶段 4 决策门采用以下结论；这些结论先于 v3 DDL 和 Repository 实现：
+Service 与数据访问的常规测试使用 `DatabaseSync(':memory:')` 和真实 `db/repo.ts`；SQLite 锁与多连接并发使用临时文件数据库。只有无法稳定制造的技术失败才在单个测试中使用局部结构类型替身，不维护全局 Fake Repository。
+
+阶段 4 决策门采用以下结论；这些结论先于 v3 DDL 和 Proposal 数据访问实现：
 
 1. 容量变化与正式计划变化统一增加 `planner_meta.schedule_version`，不增加 `capacity_version`；
 2. `task.seq` 对已有 Phase 内任务按 `(day IS NULL), day, created_at, id` 升序稳定回填为从 1 开始的连续整数；`phase_id IS NULL` 的 legacy loose task 使用同一排序全局编号，但该编号只为兼容列完整性服务，不赋予它 V2 业务归属；
@@ -165,7 +167,7 @@ Repository 不得长期返回 `unknown` JSON，也不得在解析失败时构造
 4. Goal 的 `title / acceptance_criteria / deadline / status` 会影响 ready Proposal，成功变化时增加统一版本，并在 commit 时与 baseline 逐字段比较；`motivation` 不影响 Proposal，也不增加该版本；
 5. Goal/Phase `acceptance_criteria` 的 staged 契约是 trim 后 1–1000 字符；兼容列允许 `null` 表达 legacy 未补录，禁止用空字符串代替；
 6. 第一版不允许 override 超容量或超过截止日期，正式 verdict 只使用 `valid / invalid`；
-7. `PlanProposal`、两个 Snapshot、local id、ordering constraints 与 validation JSON 的准确结构以 `ARCHITECTURE_V2.md` 第 4 节为唯一类型契约：一个 Proposal.stage、一份规范化 Candidate、精简 validation；后续 Core codec、DDL 行映射和 Repository 不得另定义近似结构。
+7. `PlanProposal`、两个 Snapshot、local id、ordering constraints 与 validation JSON 的准确结构以 `ARCHITECTURE_V2.md` 第 4 节为唯一类型契约：一个 Proposal.stage、一份规范化 Candidate、精简 validation；后续 Core codec、DDL 行映射和 `db/repo.ts` 不得另定义近似结构。
 
 ### 8.1 目标
 
@@ -276,7 +278,7 @@ planner-v2-compat
 - 删除 legacy；
 - 正式历史版本浏览。
 
-阶段 5 的状态机、Validator 和 Service 必须复用阶段 4 已冻结的 Proposal 类型，不得为 Tool 或 Repository 再定义一套近似类型。
+阶段 5 的状态机、Validator 和 Service 必须复用阶段 4 已冻结的 Proposal 类型，不得为 Tool 或 `db/repo.ts` 再定义一套近似类型。
 
 配置开关：
 
@@ -390,7 +392,7 @@ npm run build
 - 没有 Tool Eval 的相似工具扩张；
 - 使用真实用户数据库作为自动化测试输入；
 - 吞掉异常或把数据库、解析、事务失败伪装成空结果、默认值或成功；
-- 在 Tool、Service、Repository 多层复制同一业务校验；
+- 在 Tool、Service、`db/repo.ts` 多层复制同一业务校验；
 - 对不可恢复错误或非幂等写入进行无上限重试；
 - 同时向 legacy `draft` 与 staged `plan_proposal` 双写同一提案；
 - 没有明确删除阶段和退出条件的兼容分支。
