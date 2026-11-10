@@ -59,8 +59,8 @@ export interface Draft {
   expiresAt: string
 }
 
-/** 一条校验发现；`where` 用阶段/任务在提案里的下标定位，便于模型局部修。 */
-export interface Issue {
+/** 一条结构化校验发现；`where` 用阶段/任务在提案里的下标定位，便于模型局部修。 */
+export interface ValidationIssue {
   kind: string
   severity: 'info' | 'warn' | 'fail'
   message: string
@@ -71,6 +71,9 @@ export interface Issue {
   /** 处置方式：只提示 / 需要用户决定（HITL）/ 数据错误直接拒绝。 */
   blocking?: 'none' | 'decision' | 'invalid'
 }
+
+/** legacy 兼容名称；现有 Tool、Judge、Repo 在后续边界迁移前继续使用。 */
+export type Issue = ValidationIssue
 
 /** 单日容量报告。`load = planned / limit`。 */
 export interface DayLoad {

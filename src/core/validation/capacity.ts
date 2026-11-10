@@ -2,7 +2,7 @@
  * 容量校验：纯函数，不读库、不发请求。阈值与判定口径见 DESIGN §8.1。
  * @module @local/planner/core/validation/capacity
  */
-import type { CapacityRules, DayLoad, Issue } from '../types.js'
+import type { CapacityRules, DayLoad, ValidationIssue } from '../types.js'
 
 /** 单任务粒度上限（分钟）；超过就建议再拆。 */
 export const MAX_TASK_MINUTES = 120
@@ -25,7 +25,7 @@ export interface DecisionOption {
 /** 一次完整评估的结果。 */
 export interface PlanEvaluation {
   verdict: PlanVerdict
-  issues: Issue[]
+  issues: ValidationIssue[]
   days: DayLoad[]
   unplanned: number
   options: DecisionOption[]
@@ -43,7 +43,7 @@ export interface PlanEntry {
 
 export interface CapacityReport {
   verdict: PlanVerdict
-  issues: Issue[]
+  issues: ValidationIssue[]
   days: DayLoad[]
   /** 未排期任务数（`day` 为空）。 */
   unplanned: number
@@ -133,7 +133,7 @@ export function checkGoalCapacity(input: {
   deadline: string | null
   today: string
   rules: CapacityRules
-}): Issue | undefined {
+}): ValidationIssue | undefined {
   const { deadline, today, rules } = input
   const total = input.proposedMinutes + (input.existingMinutes ?? 0)
   if (deadline === null) return undefined
@@ -162,7 +162,7 @@ export function checkGoalCapacity(input: {
  * @param issues - 全部问题。
  * @returns 取最严重的一档。
  */
-export function verdictOf(issues: readonly Issue[]): PlanVerdict {
+export function verdictOf(issues: readonly ValidationIssue[]): PlanVerdict {
   if (issues.some((issue) => issue.blocking === 'invalid')) return 'invalid'
   if (issues.some((issue) => issue.blocking === 'decision')) return 'needs_decision'
   if (issues.some((issue) => issue.severity === 'warn' || issue.severity === 'fail')) return 'warn'
@@ -214,7 +214,7 @@ export function evaluatePlan(input: {
  * @returns 报告：verdict、issues、逐日负载、未排期数。
  */
 export function checkCapacity(entries: readonly PlanEntry[], rules: CapacityRules): CapacityReport {
-  const issues: Issue[] = []
+  const issues: ValidationIssue[] = []
   const totals = new Map<string, number>()
   let unplanned = 0
 
