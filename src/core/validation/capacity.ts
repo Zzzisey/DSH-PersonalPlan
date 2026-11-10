@@ -3,12 +3,9 @@
  * @module @local/planner/core/validation/capacity
  */
 import type { CapacityRules, DayLoad, ValidationIssue } from '../types.js'
+import { CAPACITY_WARN_RATIO, MAX_DAY_MINUTES, MAX_TASK_MINUTES } from '../policy.js'
 
-/** 单任务粒度上限（分钟）；超过就建议再拆。 */
-export const MAX_TASK_MINUTES = 120
-
-/** 单日物理上限（分钟）；超过视为数据错误，而不是权衡。 */
-export const MAX_DAY_MINUTES = 720
+export { MAX_DAY_MINUTES, MAX_TASK_MINUTES } from '../policy.js'
 
 /** 一条问题的处置方式：只提示 / 需要用户决定 / 直接拒绝。 */
 export type Blocking = 'none' | 'decision' | 'invalid'
@@ -30,9 +27,6 @@ export interface PlanEvaluation {
   unplanned: number
   options: DecisionOption[]
 }
-
-/** 接近上限的告警线：`load >= 0.85` 即 warn。 */
-const WARN_RATIO = 0.85
 
 /** 一个待校验项；`day` 为空表示未排期。 */
 export interface PlanEntry {
@@ -255,7 +249,7 @@ export function checkCapacity(entries: readonly PlanEntry[], rules: CapacityRule
         day: item.day,
         suggestion: '把低优先级任务挪到空余日期，或把任务拆小后分散',
       })
-    } else if (item.load >= WARN_RATIO) {
+    } else if (item.load >= CAPACITY_WARN_RATIO) {
       issues.push({
         kind: 'near-capacity',
         severity: 'warn',
