@@ -10,13 +10,13 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createPlannerRoutes } from './api/routes.js'
+import { createPlannerRepo } from './db/repo.js'
 import { openPlannerDb } from './db/schema.js'
 import { createPlannerTools } from './tools.js'
 import type { Config } from './host/config.js'
 import { makeLegacyJudgeChat } from './host/legacy-llm.js'
 import { PlannerService } from './host/planner-service.js'
 import { registerDegradedPrompt, registerLegacyPlannerPrompt } from './host/prompt.js'
-import { SqlitePlannerRepository } from './host/sqlite-repository.js'
 
 const VERSION = '0.1.0'
 export const name = 'planner'
@@ -55,7 +55,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   if (judge !== undefined && judgeChat === undefined) {
     console.warn('[planner] 配置了 judge 但宿主没有 llm 服务，语义评审已关闭')
   }
-  const service = new PlannerService(new SqlitePlannerRepository(db), judgeChat === undefined
+  const service = new PlannerService(createPlannerRepo(db), judgeChat === undefined
     ? {}
     : {
       judgeChat,

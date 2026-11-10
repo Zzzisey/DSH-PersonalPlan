@@ -1,12 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
-  createGoal,
-  createTask,
-  getCapacity,
-  getTask,
+  createPlannerRepo,
   openForTest,
-  updateTasks,
 } from './helpers/repoHarness.ts'
 import { createRouteHarness } from './helpers/routeHarness.ts'
 
@@ -14,11 +10,12 @@ test('month / day 路由返回 legacy 日历口径', async () => {
   const db = openForTest()
   const server = await createRouteHarness(db)
   try {
-    const goal = createGoal(db, { title: '路由目标', deadline: '2026-11-30' })
-    createTask(db, { goalId: goal.id, title: '待完成', day: '2026-11-10', estMinutes: 60 })
-    const done = createTask(db, { goalId: goal.id, title: '已完成', day: '2026-11-10', estMinutes: 45 })
-    const dropped = createTask(db, { goalId: goal.id, title: '已放弃', day: '2026-11-10', estMinutes: 30 })
-    updateTasks(db, [{ id: done.id, status: 'done' }, { id: dropped.id, status: 'dropped' }])
+    const repo = createPlannerRepo(db)
+    const goal = repo.createGoal({ title: '路由目标', deadline: '2026-11-30' })
+    repo.createTask({ goalId: goal.id, title: '待完成', day: '2026-11-10', estMinutes: 60 })
+    const done = repo.createTask({ goalId: goal.id, title: '已完成', day: '2026-11-10', estMinutes: 45 })
+    const dropped = repo.createTask({ goalId: goal.id, title: '已放弃', day: '2026-11-10', estMinutes: 30 })
+    repo.updateTasks([{ id: done.id, status: 'done' }, { id: dropped.id, status: 'dropped' }])
 
     const monthResponse = await server.request({ path: '/personal-planner/api/month?month=2026-11' })
     assert.equal(monthResponse.status, 200)
@@ -57,8 +54,9 @@ test('PATCH tasks 成功，并在整批任一任务不存在时全部回滚', as
   const db = openForTest()
   const server = await createRouteHarness(db)
   try {
-    const first = createTask(db, { title: 'A', day: '2026-11-10', estMinutes: 60 })
-    const second = createTask(db, { title: 'B', day: '2026-11-11', estMinutes: 30 })
+    const repo = createPlannerRepo(db)
+    const first = repo.createTask({ title: 'A', day: '2026-11-10', estMinutes: 60 })
+    const second = repo.createTask({ title: 'B', day: '2026-11-11', estMinutes: 30 })
     const success = await server.request({
       method: 'PATCH',
       path: '/personal-planner/api/tasks',
@@ -82,9 +80,9 @@ test('PATCH tasks 成功，并在整批任一任务不存在时全部回滚', as
     })
     assert.equal(failed.status, 400)
     assert.match((failed.body as { error: string }).error, /t_missing/)
-    assert.equal(getTask(db, first.id)?.day, '2026-11-12')
-    assert.equal(getTask(db, first.id)?.status, 'done')
-    assert.equal(getTask(db, second.id)?.day, '2026-11-11')
+    assert.equal(repo.getTask(first.id)?.day, '2026-11-12')
+    assert.equal(repo.getTask(first.id)?.status, 'done')
+    assert.equal(repo.getTask(second.id)?.day, '2026-11-11')
   } finally {
     await server.close()
     db.close()
@@ -95,6 +93,7 @@ test('PUT capacity 校验、持久化并返回当前月份容量报告', async (
   const db = openForTest()
   const server = await createRouteHarness(db)
   try {
+    const repo = createPlannerRepo(db)
     const updated = await server.request({
       method: 'PUT',
       path: '/personal-planner/api/capacity',
@@ -108,7 +107,7 @@ test('PUT capacity 校验、持久化并返回当前月份容量报告', async (
     const body = updated.body as { ok: boolean; capacity: unknown; report: { verdict: string } }
     assert.equal(body.ok, true)
     assert.deepEqual(body.capacity, { weekdayMinutes: 180, weekendMinutes: 90, overrides: { '2026-11-14': 60 } })
-    assert.deepEqual(getCapacity(db), body.capacity)
+    assert.deepEqual(repo.getCapacity(), body.capacity)
     assert.equal(typeof body.report.verdict, 'string')
 
     const invalid = await server.request({
@@ -117,7 +116,7 @@ test('PUT capacity 校验、持久化并返回当前月份容量报告', async (
       body: { weekdayMinutes: 10, weekendMinutes: 90, overrides: {} },
     })
     assert.equal(invalid.status, 400)
-    assert.equal(getCapacity(db).weekdayMinutes, 180, '非法容量不能覆盖上一份设置')
+    assert.equal(repo.getCapacity().weekdayMinutes, 180, '非法容量不能覆盖上一份设置')
   } finally {
     await server.close()
     db.close()

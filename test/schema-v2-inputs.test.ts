@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import type { DatabaseSync } from 'node:sqlite'
-import { getCapacity } from './helpers/repoHarness.ts'
+import { createPlannerRepo } from './helpers/repoHarness.ts'
 import { createV2MigrationInputCopy } from './helpers/schemaFixtures.ts'
 
 function tableNames(db: DatabaseSync): string[] {
@@ -68,7 +68,7 @@ test('v2 迁移输入锁定正式对象 id、数量与全部 legacy 状态', () 
 
 test('v2 迁移输入锁定 setting 读取与 decision/override 数据', () => {
   const db = createV2MigrationInputCopy()
-  assert.deepEqual(getCapacity(db), {
+  assert.deepEqual(createPlannerRepo(db).getCapacity(), {
     weekdayMinutes: 300,
     weekendMinutes: 150,
     overrides: { '2026-11-14': 90 },

@@ -2,8 +2,8 @@ import { Readable } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { DatabaseSync } from 'node:sqlite'
 import { createPlannerRoutes } from '../../src/api/routes.ts'
+import { createPlannerRepo } from '../../src/db/repo.ts'
 import { PlannerService } from '../../src/host/planner-service.ts'
-import { SqlitePlannerRepository } from '../../src/host/sqlite-repository.ts'
 
 export interface RouteResponse {
   status: number
@@ -29,7 +29,7 @@ export interface RouteHarness {
  * 同时保留 isLoopbackRequest 所读取的 method/url/headers/socket.remoteAddress。
  */
 export async function createRouteHarness(db: DatabaseSync): Promise<RouteHarness> {
-  const route = createPlannerRoutes(new PlannerService(new SqlitePlannerRepository(db)))[0]
+  const route = createPlannerRoutes(new PlannerService(createPlannerRepo(db)))[0]
   if (route === undefined) throw new Error('planner route 未注册')
   return {
     async request(input) {

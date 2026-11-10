@@ -25,10 +25,10 @@ import { runReschedule, type Move, type RescheduleChat } from '../reschedule.js'
 import type {
   CreateGoalInput,
   GoalPatch,
-  PlannerRepository,
+  PlannerRepo,
   TaskFilter,
   TaskPatch,
-} from './repository.js'
+} from '../db/repo.js'
 
 export interface PlannerServiceOptions {
   judgeChat?: JudgeChat
@@ -151,10 +151,10 @@ function bad(message: string): string {
 
 /** 所有 legacy 用例的业务入口；Adapter 只负责参数和响应协议。 */
 export class PlannerService {
-  private readonly repo: PlannerRepository
+  private readonly repo: PlannerRepo
   private readonly options: PlannerServiceOptions
 
-  constructor(repo: PlannerRepository, options: PlannerServiceOptions = {}) {
+  constructor(repo: PlannerRepo, options: PlannerServiceOptions = {}) {
     this.repo = repo
     this.options = options
   }

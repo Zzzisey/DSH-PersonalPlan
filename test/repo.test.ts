@@ -3,78 +3,63 @@ import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import { migrate, SCHEMA_VERSION, SchemaTooNewError } from '../src/db/schema.ts'
 import {
-  appendCheck,
-  createDraft,
-  createGoal,
-  createTask,
-  getCapacity,
-  getDraft,
-  getTask,
-  listTasks,
-  openForTest,
-  setDraftStatus,
-  setDraftDecision,
-  setDraftVerdict,
-  setCapacity,
-  transaction,
-  updateGoal,
-  updateTasks,
+  openRepoForTest,
 } from './helpers/repoHarness.ts'
 import { openV1ForTest } from './helpers/schemaFixtures.ts'
 
 test('建目标与任务后能查回来', () => {
-  const db = openForTest()
-  const goal = createGoal(db, { title: '拿到 offer', deadline: '2026-11-30' })
+  const { db, repo } = openRepoForTest()
+  const goal = repo.createGoal({ title: '拿到 offer', deadline: '2026-11-30' })
   assert.match(goal.id, /^g_[0-9a-f]{8}$/)
 
-  const task = createTask(db, { goalId: goal.id, title: '投 3 家简历', day: '2026-10-26', estMinutes: 60, priority: 'P0' })
+  const task = repo.createTask({ goalId: goal.id, title: '投 3 家简历', day: '2026-10-26', estMinutes: 60, priority: 'P0' })
   assert.equal(task.status, 'todo')
   assert.equal(task.priority, 'P0')
 
-  const listed = listTasks(db, { goalId: goal.id })
+  const listed = repo.listTasks({ goalId: goal.id })
   assert.deepEqual(listed.map((item) => item.id), [task.id])
   db.close()
 })
 
 test('批量更新是单事务：任一条不存在则整批回滚', () => {
-  const db = openForTest()
-  const first = createTask(db, { title: 'A', day: '2026-10-26' })
-  const second = createTask(db, { title: 'B', day: '2026-10-27' })
+  const { db, repo } = openRepoForTest()
+  const first = repo.createTask({ title: 'A', day: '2026-10-26' })
+  const second = repo.createTask({ title: 'B', day: '2026-10-27' })
 
   assert.throws(
-    () => updateTasks(db, [{ id: first.id, day: '2026-10-28' }, { id: 't_missing', day: '2026-10-28' }]),
+    () => repo.updateTasks([{ id: first.id, day: '2026-10-28' }, { id: 't_missing', day: '2026-10-28' }]),
     /不存在/,
   )
-  assert.equal(getTask(db, first.id)?.day, '2026-10-26', '整批回滚，第一条也不该变')
-  assert.equal(getTask(db, second.id)?.day, '2026-10-27')
+  assert.equal(repo.getTask(first.id)?.day, '2026-10-26', '整批回滚，第一条也不该变')
+  assert.equal(repo.getTask(second.id)?.day, '2026-10-27')
 
-  const updated = updateTasks(db, [{ id: first.id, day: '2026-10-28', status: 'doing' }])
+  const updated = repo.updateTasks([{ id: first.id, day: '2026-10-28', status: 'doing' }])
   assert.equal(updated[0]?.day, '2026-10-28')
   assert.equal(updated[0]?.status, 'doing')
   db.close()
 })
 
 test('容量默认 240/120，写入后读回，范围非法会拒绝', () => {
-  const db = openForTest()
-  assert.deepEqual(getCapacity(db), { weekdayMinutes: 240, weekendMinutes: 120, overrides: {} })
+  const { db, repo } = openRepoForTest()
+  assert.deepEqual(repo.getCapacity(), { weekdayMinutes: 240, weekendMinutes: 120, overrides: {} })
 
-  setCapacity(db, { weekdayMinutes: 180, weekendMinutes: 90, overrides: { '2026-10-31': 60 } })
-  assert.equal(getCapacity(db).weekdayMinutes, 180)
+  repo.setCapacity({ weekdayMinutes: 180, weekendMinutes: 90, overrides: { '2026-10-31': 60 } })
+  assert.equal(repo.getCapacity().weekdayMinutes, 180)
 
-  assert.throws(() => setCapacity(db, { weekdayMinutes: 10, weekendMinutes: 90, overrides: {} }), /30\.\.1440/)
-  assert.equal(getCapacity(db).weekdayMinutes, 180, '非法写入不该生效')
+  assert.throws(() => repo.setCapacity({ weekdayMinutes: 10, weekendMinutes: 90, overrides: {} }), /30\.\.1440/)
+  assert.equal(repo.getCapacity().weekdayMinutes, 180, '非法写入不该生效')
   db.close()
 })
 
 test('草稿能记录 verdict 与状态', () => {
-  const db = openForTest()
-  const draft = createDraft(db, { mode: 'new', payload: { phases: [] } })
+  const { db, repo } = openRepoForTest()
+  const draft = repo.createDraft({ mode: 'new', payload: { phases: [] } })
   assert.equal(draft.status, 'open')
   assert.equal(draft.verdict, null)
 
-  setDraftVerdict(db, draft.id, 'warn')
-  setDraftStatus(db, draft.id, 'committed')
-  const stored = getDraft(db, draft.id)
+  repo.setDraftVerdict(draft.id, 'warn')
+  repo.setDraftStatus(draft.id, 'committed')
+  const stored = repo.getDraft(draft.id)
   assert.equal(stored?.verdict, 'warn')
   assert.equal(stored?.status, 'committed')
   assert.ok(new Date(stored?.expiresAt ?? 0).getTime() > Date.now())
@@ -82,8 +67,8 @@ test('草稿能记录 verdict 与状态', () => {
 })
 
 test('check_log 追加一条校验记录', () => {
-  const db = openForTest()
-  appendCheck(db, {
+  const { db, repo } = openRepoForTest()
+  repo.appendCheck({
     kind: 'capacity',
     target: 'd_00000000',
     verdict: 'fail',
@@ -102,17 +87,17 @@ test('check_log 追加一条校验记录', () => {
 })
 
 test('草稿记录"需要用户决定"与选项，override 也能落日志', () => {
-  const db = openForTest()
-  const draft = createDraft(db, { mode: 'new', payload: { phases: [] } })
+  const { db, repo } = openRepoForTest()
+  const draft = repo.createDraft({ mode: 'new', payload: { phases: [] } })
   assert.equal(draft.decisionRequired, 0)
   assert.equal(draft.optionsJson, null)
 
-  setDraftDecision(db, draft.id, true, [{ code: 'shrink', label: '砍任务' }])
-  const stored = getDraft(db, draft.id)
+  repo.setDraftDecision(draft.id, true, [{ code: 'shrink', label: '砍任务' }])
+  const stored = repo.getDraft(draft.id)
   assert.equal(stored?.decisionRequired, 1)
   assert.deepEqual(JSON.parse(stored?.optionsJson ?? '[]'), [{ code: 'shrink', label: '砍任务' }])
 
-  appendCheck(db, {
+  repo.appendCheck({
     kind: 'override',
     target: draft.id,
     verdict: 'warn',
@@ -125,7 +110,7 @@ test('草稿记录"需要用户决定"与选项，override 也能落日志', () 
 })
 
 test('空库创建完整 v2 schema', () => {
-  const db = openForTest()
+  const { db } = openRepoForTest()
   const row = db.prepare('PRAGMA user_version').get() as { user_version: number }
   assert.equal(row.user_version, SCHEMA_VERSION)
   const tables = (db.prepare("select name from sqlite_master where type = 'table' and name not like 'sqlite_%'").all() as Array<{ name: string }>)
@@ -162,7 +147,7 @@ test('真实 v1 fixture 升级到 v2，并保留 draft 与 check_log', () => {
 })
 
 test('v2 真实列与 CHECK / FK 约束保持生效', () => {
-  const db = openForTest()
+  const { db } = openRepoForTest()
   const columns = (table: string): string[] => (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name)
   assert.deepEqual(columns('goal'), ['id', 'title', 'motivation', 'deadline', 'status', 'created_at', 'updated_at'])
   assert.deepEqual(columns('phase'), ['id', 'goal_id', 'title', 'seq', 'start_day', 'end_day', 'status', 'created_at', 'updated_at'])
@@ -201,10 +186,10 @@ test('v2 真实列与 CHECK / FK 约束保持生效', () => {
 })
 
 test('transaction 回调抛错时回滚此前全部写入', () => {
-  const db = openForTest()
-  assert.throws(() => transaction(db, () => {
-    createGoal(db, { title: '不应留下' })
-    createTask(db, { title: '也不应留下' })
+  const { db, repo } = openRepoForTest()
+  assert.throws(() => repo.transaction(() => {
+    repo.createGoal({ title: '不应留下' })
+    repo.createTask({ title: '也不应留下' })
     throw new Error('forced failure')
   }), /forced failure/)
   assert.equal((db.prepare('select count(*) as n from goal').get() as { n: number }).n, 0)
@@ -225,16 +210,16 @@ test('高于插件支持版本的数据库拒绝迁移', () => {
 })
 
 test('修改目标：改状态/标题/截止，不碰任务；不存在返回 undefined', () => {
-  const db = openForTest()
-  const goal = createGoal(db, { title: '旧标题', deadline: '2026-11-01' })
-  const task = createTask(db, { goalId: goal.id, title: 'A', day: '2026-11-01' })
+  const { db, repo } = openRepoForTest()
+  const goal = repo.createGoal({ title: '旧标题', deadline: '2026-11-01' })
+  const task = repo.createTask({ goalId: goal.id, title: 'A', day: '2026-11-01' })
 
-  const updated = updateGoal(db, goal.id, { status: 'dropped', title: '新标题', deadline: '2026-12-01' })
+  const updated = repo.updateGoal(goal.id, { status: 'dropped', title: '新标题', deadline: '2026-12-01' })
   assert.equal(updated?.status, 'dropped')
   assert.equal(updated?.title, '新标题')
   assert.equal(updated?.deadline, '2026-12-01')
-  assert.equal(getTask(db, task.id)?.title, 'A', '任务不受影响')
+  assert.equal(repo.getTask(task.id)?.title, 'A', '任务不受影响')
 
-  assert.equal(updateGoal(db, 'g_missing', { status: 'done' }), undefined)
+  assert.equal(repo.updateGoal('g_missing', { status: 'done' }), undefined)
   db.close()
 })

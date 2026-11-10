@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { test } from 'node:test'
 
@@ -50,9 +50,25 @@ test('Core 只能依赖 Core 内部文件，且不导入 DSH、SQLite、HTTP 或
   }
 })
 
-test('Tool、Route 与插件入口不直接依赖 SQLite Repo', () => {
-  for (const file of ['src/tools.ts', 'src/api/routes.ts', 'src/index.ts']) {
+test('Tool 与 Route 只通过 PlannerService 访问计划数据', () => {
+  for (const file of ['src/tools.ts', 'src/api/routes.ts']) {
     const source = readFileSync(resolve(file), 'utf8')
     assert.doesNotMatch(source, /(?:db\/repo|node:sqlite)/, `${file} 必须通过 PlannerService 访问计划数据`)
   }
+})
+
+test('运行时只保留 db/repo.ts 数据访问对象，不保留 Repository 接口或转发 Adapter', () => {
+  assert.equal(existsSync(resolve('src/host/repository.ts')), false)
+  assert.equal(existsSync(resolve('src/host/sqlite-repository.ts')), false)
+
+  const repoSource = readFileSync(resolve('src/db/repo.ts'), 'utf8')
+  assert.match(repoSource, /export function createPlannerRepo\(/)
+  assert.match(repoSource, /export type PlannerRepo = ReturnType<typeof createPlannerRepo>/)
+
+  const serviceSource = readFileSync(resolve('src/host/planner-service.ts'), 'utf8')
+  assert.match(serviceSource, /import type \{[\s\S]*PlannerRepo[\s\S]*\} from '\.\.\/db\/repo\.js'/)
+  assert.doesNotMatch(serviceSource, /DatabaseSync/)
+
+  const entrySource = readFileSync(resolve('src/index.ts'), 'utf8')
+  assert.match(entrySource, /new PlannerService\(createPlannerRepo\(db\)/)
 })

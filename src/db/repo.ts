@@ -43,7 +43,7 @@ function newId(prefix: 'g' | 'p' | 't' | 'd'): string {
  * @param db - 连接。
  * @param fn - 事务体；抛错即回滚。
  */
-export function transaction<T>(db: DatabaseSync, fn: () => T): T {
+function transaction<T>(db: DatabaseSync, fn: () => T): T {
   db.exec('BEGIN IMMEDIATE')
   try {
     const value = fn()
@@ -63,7 +63,7 @@ export interface CreateGoalInput {
   deadline?: string
 }
 
-export function createGoal(db: DatabaseSync, input: CreateGoalInput): Goal {
+function createGoal(db: DatabaseSync, input: CreateGoalInput): Goal {
   const stamp = nowIso()
   const id = newId('g')
   db.prepare(`insert into goal (id, title, motivation, deadline, status, created_at, updated_at)
@@ -78,11 +78,11 @@ export function createGoal(db: DatabaseSync, input: CreateGoalInput): Goal {
   return getGoal(db, id)!
 }
 
-export function getGoal(db: DatabaseSync, id: string): Goal | undefined {
+function getGoal(db: DatabaseSync, id: string): Goal | undefined {
   return db.prepare(`select ${GOAL_COLUMNS} from goal where id = ?`).get(id) as unknown as Goal | undefined
 }
 
-export function listGoals(db: DatabaseSync, status?: string): Goal[] {
+function listGoals(db: DatabaseSync, status?: string): Goal[] {
   const sql = status === undefined
     ? `select ${GOAL_COLUMNS} from goal order by created_at desc`
     : `select ${GOAL_COLUMNS} from goal where status = ? order by created_at desc`
@@ -105,7 +105,7 @@ export interface GoalPatch {
  * @param patch - 要改的字段；空补丁原样返回。
  * @returns 更新后的目标；目标不存在时 undefined。
  */
-export function updateGoal(db: DatabaseSync, id: string, patch: GoalPatch): Goal | undefined {
+function updateGoal(db: DatabaseSync, id: string, patch: GoalPatch): Goal | undefined {
   const current = getGoal(db, id)
   if (current === undefined) return undefined
   const sets: string[] = []
@@ -141,7 +141,7 @@ export interface CreateTaskInput {
   note?: string
 }
 
-export function createPhase(db: DatabaseSync, input: CreatePhaseInput): Phase {
+function createPhase(db: DatabaseSync, input: CreatePhaseInput): Phase {
   const stamp = nowIso()
   const id = newId('p')
   db.prepare(`insert into phase (id, goal_id, title, seq, start_day, end_day, status, created_at, updated_at)
@@ -158,11 +158,11 @@ export function createPhase(db: DatabaseSync, input: CreatePhaseInput): Phase {
   return db.prepare(`select ${PHASE_COLUMNS} from phase where id = ?`).get(id) as unknown as Phase
 }
 
-export function listPhases(db: DatabaseSync, goalId: string): Phase[] {
+function listPhases(db: DatabaseSync, goalId: string): Phase[] {
   return db.prepare(`select ${PHASE_COLUMNS} from phase where goal_id = ? order by seq`).all(goalId) as unknown as Phase[]
 }
 
-export function createTask(db: DatabaseSync, input: CreateTaskInput): Task {
+function createTask(db: DatabaseSync, input: CreateTaskInput): Task {
   const stamp = nowIso()
   const id = newId('t')
   db.prepare(`insert into task (id, goal_id, phase_id, title, day, est_minutes, priority, status, note, created_at, updated_at)
@@ -181,7 +181,7 @@ export function createTask(db: DatabaseSync, input: CreateTaskInput): Task {
   return getTask(db, id)!
 }
 
-export function getTask(db: DatabaseSync, id: string): Task | undefined {
+function getTask(db: DatabaseSync, id: string): Task | undefined {
   return db.prepare(`select ${TASK_COLUMNS} from task where id = ?`).get(id) as unknown as Task | undefined
 }
 
@@ -194,7 +194,7 @@ export interface TaskFilter {
   limit?: number
 }
 
-export function listTasks(db: DatabaseSync, filter: TaskFilter = {}): Task[] {
+function listTasks(db: DatabaseSync, filter: TaskFilter = {}): Task[] {
   const clauses: string[] = []
   const params: unknown[] = []
   if (filter.from !== undefined) { clauses.push('day >= ?'); params.push(filter.from) }
@@ -225,7 +225,7 @@ export interface TaskPatch {
  * @param patches - 补丁数组。
  * @returns 更新后的任务（按输入顺序）。
  */
-export function updateTasks(db: DatabaseSync, patches: TaskPatch[]): Task[] {
+function updateTasks(db: DatabaseSync, patches: TaskPatch[]): Task[] {
   if (patches.length === 0) return []
   return transaction(db, () => patches.map((patch) => {
     const current = getTask(db, patch.id)
@@ -255,7 +255,7 @@ export interface CreateDraftInput {
   payload: unknown
 }
 
-export function createDraft(db: DatabaseSync, input: CreateDraftInput): Draft {
+function createDraft(db: DatabaseSync, input: CreateDraftInput): Draft {
   const stamp = new Date()
   const id = newId('d')
   db.prepare(`insert into draft (id, goal_id, mode, payload_json, verdict, status, decision_required, options_json, created_at, expires_at)
@@ -270,20 +270,20 @@ export function createDraft(db: DatabaseSync, input: CreateDraftInput): Draft {
   return getDraft(db, id)!
 }
 
-export function getDraft(db: DatabaseSync, id: string): Draft | undefined {
+function getDraft(db: DatabaseSync, id: string): Draft | undefined {
   return db.prepare(`select ${DRAFT_COLUMNS} from draft where id = ?`).get(id) as unknown as Draft | undefined
 }
 
-export function updateDraftPayload(db: DatabaseSync, id: string, payload: unknown): Draft {
+function updateDraftPayload(db: DatabaseSync, id: string, payload: unknown): Draft {
   db.prepare('update draft set payload_json = ? where id = ?').run(JSON.stringify(payload), id)
   return getDraft(db, id)!
 }
 
-export function setDraftVerdict(db: DatabaseSync, id: string, verdict: Verdict): void {
+function setDraftVerdict(db: DatabaseSync, id: string, verdict: Verdict): void {
   db.prepare('update draft set verdict = ? where id = ?').run(verdict, id)
 }
 
-export function setDraftStatus(db: DatabaseSync, id: string, status: DraftStatus): void {
+function setDraftStatus(db: DatabaseSync, id: string, status: DraftStatus): void {
   db.prepare('update draft set status = ? where id = ?').run(status, id)
 }
 
@@ -294,7 +294,7 @@ export function setDraftStatus(db: DatabaseSync, id: string, status: DraftStatus
  * @param required - 是否需要用户决定。
  * @param options - 给用户的选项数组；不需要时传 undefined。
  */
-export function setDraftDecision(db: DatabaseSync, id: string, required: boolean, options: unknown): void {
+function setDraftDecision(db: DatabaseSync, id: string, required: boolean, options: unknown): void {
   db.prepare('update draft set decision_required = ?, options_json = ? where id = ?').run(
     required ? 1 : 0,
     options === undefined ? null : JSON.stringify(options),
@@ -312,7 +312,7 @@ export interface CheckEntry {
   model?: string
 }
 
-export function appendCheck(db: DatabaseSync, entry: CheckEntry): void {
+function appendCheck(db: DatabaseSync, entry: CheckEntry): void {
   db.prepare(`insert into check_log (at, kind, target, verdict, issues_json, model) values (?,?,?,?,?,?)`).run(
     nowIso(),
     entry.kind,
@@ -323,7 +323,7 @@ export function appendCheck(db: DatabaseSync, entry: CheckEntry): void {
   )
 }
 
-export function readSetting<T>(db: DatabaseSync, key: string, fallback: T): T {
+function readSetting<T>(db: DatabaseSync, key: string, fallback: T): T {
   const row = db.prepare('select value from setting where key = ?').get(key) as { value: string } | undefined
   if (row === undefined) return fallback
   try {
@@ -333,7 +333,7 @@ export function readSetting<T>(db: DatabaseSync, key: string, fallback: T): T {
   }
 }
 
-export function writeSetting(db: DatabaseSync, key: string, value: unknown): void {
+function writeSetting(db: DatabaseSync, key: string, value: unknown): void {
   db.prepare(`insert into setting (key, value, updated_at) values (?,?,?)
     on conflict(key) do update set value = excluded.value, updated_at = excluded.updated_at`).run(
     key,
@@ -352,7 +352,7 @@ export const DEFAULT_CAPACITY: CapacityRules = {
 }
 
 /** 读取容量规则；缺失或损坏时回落到 `DEFAULT_CAPACITY`。 */
-export function getCapacity(db: DatabaseSync): CapacityRules {
+function getCapacity(db: DatabaseSync): CapacityRules {
   const raw = readSetting<Partial<CapacityRules>>(db, CAPACITY_KEY, {})
   const weekday = typeof raw.weekdayMinutes === 'number' ? raw.weekdayMinutes : DEFAULT_CAPACITY.weekdayMinutes
   const weekend = typeof raw.weekendMinutes === 'number' ? raw.weekendMinutes : DEFAULT_CAPACITY.weekendMinutes
@@ -366,7 +366,7 @@ export function getCapacity(db: DatabaseSync): CapacityRules {
  * @param rules - 新规则。
  * @throws 当数值不是 30..1440 的整数时。
  */
-export function setCapacity(db: DatabaseSync, rules: CapacityRules): void {
+function setCapacity(db: DatabaseSync, rules: CapacityRules): void {
   const check = (value: number, label: string): void => {
     if (!Number.isInteger(value) || value < 30 || value > 1440) {
       throw new Error(`${label} 必须是 30..1440 的整数`)
@@ -380,3 +380,31 @@ export function setCapacity(db: DatabaseSync, rules: CapacityRules): void {
   }
   writeSetting(db, CAPACITY_KEY, rules)
 }
+
+/** 将运行时数据访问绑定到一个 SQLite 连接。 */
+export function createPlannerRepo(db: DatabaseSync) {
+  return {
+    createGoal: (input: CreateGoalInput) => createGoal(db, input),
+    getGoal: (id: string) => getGoal(db, id),
+    listGoals: (status?: string) => listGoals(db, status),
+    updateGoal: (id: string, patch: GoalPatch) => updateGoal(db, id, patch),
+    createPhase: (input: CreatePhaseInput) => createPhase(db, input),
+    listPhases: (goalId: string) => listPhases(db, goalId),
+    createTask: (input: CreateTaskInput) => createTask(db, input),
+    getTask: (id: string) => getTask(db, id),
+    listTasks: (filter: TaskFilter = {}) => listTasks(db, filter),
+    updateTasks: (patches: TaskPatch[]) => updateTasks(db, patches),
+    createDraft: (input: CreateDraftInput) => createDraft(db, input),
+    getDraft: (id: string) => getDraft(db, id),
+    updateDraftPayload: (id: string, payload: unknown) => updateDraftPayload(db, id, payload),
+    setDraftVerdict: (id: string, verdict: Verdict) => setDraftVerdict(db, id, verdict),
+    setDraftStatus: (id: string, status: DraftStatus) => setDraftStatus(db, id, status),
+    setDraftDecision: (id: string, required: boolean, options: unknown) => setDraftDecision(db, id, required, options),
+    appendCheck: (entry: CheckEntry) => appendCheck(db, entry),
+    getCapacity: () => getCapacity(db),
+    setCapacity: (rules: CapacityRules) => setCapacity(db, rules),
+    transaction: <T>(fn: () => T) => transaction(db, fn),
+  }
+}
+
+export type PlannerRepo = ReturnType<typeof createPlannerRepo>
