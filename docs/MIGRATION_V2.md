@@ -149,6 +149,12 @@
 
 ## 8. 阶段 4：兼容 Schema（候选 `user_version = 3`）
 
+### 8.0 类型先于存储实现
+
+在编写 v3 DDL 和 Proposal Repository 之前，先解决会改变持久化结构的业务决策，再在 Core 定义 `PlanProposal`、Snapshot、稳定 local id、ordering constraints、validation 与 JSON 持久化类型，并定义严格 codec。阶段 4 只冻结数据契约，不实现阶段状态机；状态转换在阶段 5 完成。
+
+Repository 不得长期返回 `unknown` JSON，也不得在解析失败时构造空 Snapshot、默认 stage/status 或空 validation。损坏记录必须返回稳定错误。
+
 ### 8.1 目标
 
 在 legacy 默认行为不变的版本中先引入 V2 所需的持久化结构。该版本是数据库升级后的安全回滚基线。
@@ -223,6 +229,8 @@ create table planner_meta (
 
 只改容量是否增加 schedule_version 需要在实现前确认；如果容量变化会使 ready Proposal 的校验失效，至少需要独立 `capacity_version` 或统一增加计划版本。
 
+Goal 的 deadline、acceptance criteria 等会影响 Proposal 合法性的字段，也必须在实现前确定失效机制：统一增加相关版本，或在 commit 锁内逐字段比较 baseline。不能只比较 Phase/Task 而忽略 Goal 已变化。
+
 ### 8.4 兼容标签
 
 Schema 合并且 legacy 仍为默认后，建立兼容标签，例如：
@@ -254,6 +262,8 @@ planner-v2-compat
 - 删除 legacy；
 - 正式历史版本浏览。
 
+阶段 5 的状态机、Validator 和 Service 必须复用阶段 4 已冻结的 Proposal 类型，不得为 Tool 或 Repository 再定义一套近似类型。
+
 配置开关：
 
 ```yaml
@@ -264,6 +274,8 @@ planningFlow: legacy | staged
 
 - `legacy`：只注册旧 propose / commit；
 - `staged`：只注册新场景入口和 Proposal 工具。
+
+阶段 5 的 staged 仅用于开发与 Agent Eval；在阶段 6 的 Preview/Commit 闭环完成前不得成为发布默认值。
 
 验收：
 
@@ -284,8 +296,10 @@ planningFlow: legacy | staged
 3. 月份裁剪 API；
 4. Client Model；
 5. React 红绿预览；
-6. 确认、取消修改、放弃；
-7. optimistic concurrency commit。
+6. Proposal 确认、取消修改、放弃的 Service/Route，以及 optimistic concurrency commit；
+7. Client 接入并启用确认、取消修改、放弃操作。
+
+Host API 必须从可信宿主上下文获得 Session 身份，不接受客户端自行声明 `owner_session_id`。commit 可以在事务外预检查，但获得 `BEGIN IMMEDIATE` 写锁后必须重新检查 owner、revision、status 与正式版本，并用 expected revision 条件更新 Proposal。
 
 关键验收：
 
@@ -324,8 +338,9 @@ planningFlow: legacy | staged
 2. 观察一个稳定周期；
 3. 删除 `makeJudgeChat`、旧 Judge 与 Reschedule 调用；
 4. 删除 legacy Tool 注册；
-5. 保留旧表只读至少一个发布周期；
-6. 是否物理删除旧表另开后续迁移。
+5. 删除 `planningFlow: legacy` 配置值；旧配置必须收到明确迁移错误，不得静默 fallback；
+6. 保留旧表只读至少一个发布周期；
+7. 是否物理删除旧表另开后续迁移。
 
 ## 13. 提交与质量门禁
 
@@ -345,7 +360,7 @@ feat(host): commit proposal with optimistic concurrency
 refactor(ai): remove direct judge and reschedule calls
 ```
 
-每个准备合并的提交必须通过：
+每个小提交先运行覆盖其改动面的定向测试、类型检查或构建；不要因为只修改一个局部就无条件启动无关的全项目矩阵。每个阶段准备合并时必须通过完整门禁：
 
 ```powershell
 npm test
@@ -359,7 +374,20 @@ npm run build
 - 同时包含大量文件移动和行为改写的提交；
 - 没有迁移测试的 Schema 变更；
 - 没有 Tool Eval 的相似工具扩张；
-- 使用真实用户数据库作为自动化测试输入。
+- 使用真实用户数据库作为自动化测试输入；
+- 吞掉异常或把数据库、解析、事务失败伪装成空结果、默认值或成功；
+- 在 Tool、Service、Repository 多层复制同一业务校验；
+- 对不可恢复错误或非幂等写入进行无上限重试；
+- 同时向 legacy `draft` 与 staged `plan_proposal` 双写同一提案；
+- 没有明确删除阶段和退出条件的兼容分支。
+
+测试范围遵循风险分层：
+
+- 文档、注释或纯展示文案：格式、链接和受影响文档检查；
+- 单个纯函数或 Validator：相关单测与 typecheck；
+- Adapter 或 Service 接线：相关特征测试、typecheck，必要时 build；
+- Schema、事务、并发、Tool Schema、发布切换：相关专项测试后再跑完整门禁；
+- 用户明确要求运行某个单项测试时，只运行该范围，除非发现会阻断判断的直接依赖。
 
 ## 14. 数据库演练与备份
 
@@ -387,7 +415,8 @@ npm run build
 | Preview 异常 | 禁止确认，切回 legacy | 正式数据不变 |
 | commit 前版本冲突 | Proposal 标记 stale | 重新生成预览 |
 | commit 事务失败 | SQLite 回滚事务 | schedule_version 不增加 |
-| staged 默认切换后异常 | 切回 legacy，再修代码 | 不降级数据库版本 |
+| staged 默认切换后异常、legacy 尚未清理 | 切回 legacy，再修代码 | 不降级数据库版本 |
+| legacy 代码已经清理后异常 | 停止受影响入口并向前修复 | 不接受已删除的 legacy 配置，不降级数据库版本 |
 
 不通过降低 `PRAGMA user_version` 伪装回滚，也不让旧二进制打开它不认识的新 Schema。
 

@@ -557,6 +557,8 @@ LLM 超时、输出无法解析、数据库繁忙和并发冲突属于工具运�
   ↓
 BEGIN IMMEDIATE，获取短写锁
   ↓
+重新检查 Proposal 所属 Session、revision、状态和正式版本
+  ↓
 读取最新正式计划和 schedule_version
   ↓
 检查提案是否仍可安全应用

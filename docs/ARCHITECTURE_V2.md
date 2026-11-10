@@ -150,6 +150,7 @@ PlannerService 负责：
 - 保存 Proposal revision；
 - 检查 session 所有权；
 - 处理 `schedule_version`；
+- 检测会影响 Proposal 的 Goal 字段、容量和正式计划变化；
 - 组织提交事务；
 - 产生 Client 和 Tool 所需的结构化结果。
 
@@ -252,9 +253,12 @@ V2 暂定向 Agent 暴露四个语义互斥的场景入口：
 
 ```text
 HTTP 输入校验
+  → 从可信 Host 上下文取得 Session 身份
   → PlannerService Command / Query
   → HTTP 状态与 JSON Response
 ```
+
+客户端不得自行声明或覆盖 `ownerSessionId`。Proposal 的读取、预览、修改和确认都必须使用 Host 提供的 Session 身份执行所有权检查。
 
 面向日历的主要查询：
 
@@ -353,8 +357,52 @@ src/
 
 | 文件 | 负责 |
 |---|---|
-| `src/index.ts` | 声明 Cordis inject，创建 SQLite Repository 和 PlannerService，注册 Prompt、Tools、Routes 与 disposer，并处理无法启动时的降级接线 |
+| `src/index.ts` | 声明 Cordis inject，创建 SQLite Repository 和 PlannerService，注册 Prompt、Tools、Routes 与 disposer，并显式报告启动失败；只按已配置的 `planningFlow` 装配对应工具，不做静默 fallback |
 | `src/host/config.ts` | 定义插件配置类型、默认值和启动期校验，包括数据库路径、`planningFlow` 等部署选项 |
+
+### 3.9 失败、校验、重试与兼容边界
+
+#### 失败必须可见
+
+- 禁止空 `catch`、只记录不返回失败、或把异常吞掉后继续走成功路径；
+- `catch` 只能用于补充上下文、把已知底层错误映射为稳定错误，或执行清理后重新抛出；原始 `cause` 应保留用于诊断；
+- 数据库查询失败不能返回 `0`、`[]`、空对象或 `undefined` 来伪装“没有数据”；“查询成功但没有记录”和“查询失败”必须是不同结果；
+- 业务默认值只能用于已经成功确认的缺省状态，例如首次初始化容量；不得用默认值掩盖读取、解析或迁移失败；
+- 写事务只有在全部写入、状态更新和版本增加都成功提交后才能返回成功。回滚、约束失败、版本冲突或数据库繁忙都必须返回明确失败，不能返回 `{ success: true }` 或空成功对象。
+
+#### 可空性只留在真实业务边界
+
+- Adapter 在入口处把 `unknown` 输入解析成合法 Command；Core 与 Service 内部对必需字段使用非可空类型；
+- `null` 只表达业务上真实存在的“没有值”，例如可选 deadline 或未完成时的 `completedAt`；
+- 对契约保证存在的内部字段，不使用 `?.`、`?? 0`、`?? []` 掩盖损坏数据；遇到契约破坏应返回稳定错误；
+- SQLite 行映射必须校验必需列和 JSON 内容，损坏记录不能被当作空 Proposal 继续处理。
+
+#### 每条规则只有一个实现所有者
+
+| 层 | 只负责 |
+|---|---|
+| Tool / HTTP Adapter | 传输格式、基础类型、身份提取和协议映射 |
+| PlannerService | 用例编排、所有权、revision、版本和事务边界 |
+| Core Validator | 阶段字段、状态转换、容量、依赖、Diff 等确定性业务规则 |
+| Repository / SQLite | SQL、约束、条件写入、事务和错误归一化 |
+| DSH Agent | 生成、语义判断和按 Tool 结果修订 |
+
+Tool Schema、Prompt 和 GUI 可以表达同一规则，但不能各自复制一份业务校验实现。advance 与 commit 必须复用同一个 Core Validator；commit 在最新正式状态上重跑属于再次调用同一权威实现，不是复制规则。
+
+#### 重试必须有限且可证明安全
+
+- 参数错误、业务校验失败、owner/revision/stage 冲突和硬性约束失败不得自动重试；
+- 仅对明确的瞬时技术故障考虑重试，例如数据库 busy 或可恢复传输失败；
+- 重试必须有上限、退避和可观测记录；超过上限返回稳定错误；
+- 非幂等写入不得在不知道前一次是否提交的情况下盲目重试；使用 revision、事务或幂等键证明安全后才允许重试；
+- staged Tool 内不重试或另起 LLM 循环。DSH Agent 是否修订并再次调用 Tool，由 Tool 结构化结果和 Agent Eval 约束。
+
+#### 兼容代码必须有退出条件
+
+- 只支持项目明确声明的 Node、SQLite 和 DSH 版本；不为未支持运行时增加猜测式 fallback；
+- legacy 与 staged 通过配置互斥，不能双写 `draft` 与 `plan_proposal`，也不能同时成为事实源；
+- 旧 `draft/check_log` 的保留只用于迁移兼容和历史诊断，不为其增加新功能；
+- 每条兼容路径必须指向迁移阶段 8 的删除或只读化步骤；在退出门满足后删除旧实现，而不是永久维护两套行为。
 
 ## 4. 提案模型
 
@@ -471,9 +519,11 @@ Preview 的月份查询只返回当前视口需要的数据：
 commit 的固定顺序：
 
 ```text
-检查 Proposal id / owner / revision / ready
+事务外预检查 Proposal id / owner / revision / ready
   ↓
 BEGIN IMMEDIATE
+  ↓
+重新检查 Proposal owner / revision / status 与 schedule/capacity version
   ↓
 读取最新 schedule_version 和受影响正式对象
   ↓
@@ -488,6 +538,8 @@ schedule_version + 1
   ↓
 COMMIT
 ```
+
+Proposal 的 committed 更新必须带 expected revision 条件。事务外检查只用于尽早失败，不能替代锁内复查和 compare-and-set。
 
 事务中禁止：
 
@@ -610,4 +662,4 @@ src/
 6. Proposal 的默认过期策略；
 7. 是否在第一版引入独立 DSH Subagent Reviewer，还是先由当前 Agent 自检并通过 Eval 判断效果。
 
-这些决策确认前可以完成旧行为测试和纯架构边界重构，但不能开始最终 Tool Schema 与 staged flow 实现。
+这些决策确认前可以完成旧行为测试和纯架构边界重构。会影响 `PlanProposal`、Snapshot、validation 或 Schema 字段的决策必须在阶段 4 定义类型和 DDL 前确认；其余决策最迟在最终 Tool Schema 与 staged flow 实现前确认。
