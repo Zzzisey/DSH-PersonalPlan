@@ -14,6 +14,8 @@ import { createPlannerRoutes } from './api/routes.js'
 import { openPlannerDb, SchemaTooNewError } from './db/schema.js'
 import { createPlannerTools } from './tools.js'
 import type { JudgeChat } from './judge.js'
+import { PlannerService } from './host/planner-service.js'
+import { SqlitePlannerRepository } from './host/sqlite-repository.js'
 
 const VERSION = '0.1.0'
 const PROMPT_BLOCK = 'plugin:planner'
@@ -145,7 +147,8 @@ export function apply(ctx: Context, config: Config = {}): void {
         ...(judge?.timeoutMs === undefined ? {} : { judgeTimeoutMs: judge.timeoutMs, rescheduleTimeoutMs: judge.timeoutMs }),
         ...(judge?.maxIssues === undefined ? {} : { judgeMaxIssues: judge.maxIssues }),
       }
-    const disposers = createPlannerTools(db, toolOptions).map((tool) => ctx.tools.register(tool))
+    const service = new PlannerService(new SqlitePlannerRepository(db), toolOptions)
+    const disposers = createPlannerTools(service).map((tool) => ctx.tools.register(tool))
     disposers.push(ctx.tools.register(defineTool({
       name: 'planner_ping',
       description: 'Personal Planner 的连通性探针：确认 Host 半区已激活，返回版本与 Host 时钟。不读写任务数据。',

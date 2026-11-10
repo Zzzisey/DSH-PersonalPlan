@@ -1,6 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
-import { createPlannerTools, type PlannerToolOptions } from '../../src/tools.ts'
+import { createPlannerTools } from '../../src/tools.ts'
+import { PlannerService, type PlannerServiceOptions } from '../../src/host/planner-service.ts'
+import { SqlitePlannerRepository } from '../../src/host/sqlite-repository.ts'
 
 export interface ToolHarness {
   definitions: ToolDefinition[]
@@ -9,8 +11,9 @@ export interface ToolHarness {
 }
 
 /** 直接调用 defineTool 产物，绕过 ToolRuntime，只用于锁定插件适配器的 legacy 行为。 */
-export function createToolHarness(db: DatabaseSync, options: PlannerToolOptions = {}): ToolHarness {
-  const definitions = createPlannerTools(db, options)
+export function createToolHarness(db: DatabaseSync, options: PlannerServiceOptions = {}): ToolHarness {
+  const service = new PlannerService(new SqlitePlannerRepository(db), options)
+  const definitions = createPlannerTools(service)
   const tool = (name: string): ToolDefinition => {
     const found = definitions.find((definition) => definition.name === name)
     if (found === undefined) throw new Error(`测试工具不存在：${name}`)
