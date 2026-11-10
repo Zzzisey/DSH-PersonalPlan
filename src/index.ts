@@ -5,23 +5,22 @@
  * 库打不开时**不抛错**：DSH 会因此起不来；改为降级空转，并用 systemPrompt 告知用户怎么修。
  * @module @local/planner
  */
-import type { DatabaseSync } from 'node:sqlite'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createPlannerRoutes } from './api/routes.js'
-import { openPlannerDb, SchemaTooNewError } from './db/schema.js'
+import { openPlannerDb } from './db/schema.js'
 import { createPlannerTools } from './tools.js'
-import type { JudgeChat } from './judge.js'
+import type { Config } from './host/config.js'
+import { makeLegacyJudgeChat } from './host/legacy-llm.js'
 import { PlannerService } from './host/planner-service.js'
+import { registerDegradedPrompt, registerLegacyPlannerPrompt } from './host/prompt.js'
 import { SqlitePlannerRepository } from './host/sqlite-repository.js'
 
 const VERSION = '0.1.0'
-const PROMPT_BLOCK = 'plugin:planner'
-const PROMPT_ORDER = 155
-
 export const name = 'planner'
+export type { Config, JudgeConfig } from './host/config.js'
 
 /**
  * 必需依赖。`systemPrompt` 用于降级告警——库坏了也要让用户在对话里看到原因。
@@ -29,89 +28,9 @@ export const name = 'planner'
  */
 export const inject = ['tools', 'webServer', 'systemPrompt']
 
-/** 语义评审配置；不配就等于关闭 Judge，只跑容量校验。 */
-export interface JudgeConfig {
-  /** 模型 provider，例如 `deepseek-official`。 */
-  provider: string
-  /** 模型 id。 */
-  model: string
-  /** 超时毫秒，默认 8000。 */
-  timeoutMs?: number
-  /** 最多保留多少条评审问题，默认 12。 */
-  maxIssues?: number
-}
-
-/** 插件配置。配置文件只放部署常量；容量等运行期偏好在数据库里。 */
-export interface Config {
-  /** SQLite 路径；留空用 `~/.dsh/personal-planner/planner.sqlite`。 */
-  dbPath?: string
-  /** 语义评审（可选）。缺省时 propose 只做容量校验。 */
-  judge?: JudgeConfig
-}
-
-/**
- * 用 `ctx.llm.stream` 组装评审用的 chat 函数。
- *
- * 软探测：宿主没有 `llm` 服务时返回 undefined（评审关闭），绝不写进 inject——
- * 那会让整个插件在缺 `llm` 的宿主上 pending。
- * @param ctx - 插件上下文。
- * @param judge - 评审配置。
- * @returns 可用的 chat 函数，或 undefined。
- */
-function makeJudgeChat(ctx: Context, judge: JudgeConfig): JudgeChat | undefined {
-  const llm = (ctx as unknown as { get?: (name: string) => unknown }).get?.('llm') as
-    | { stream?: (options: Record<string, unknown>) => AsyncIterable<Record<string, unknown>> }
-    | undefined
-  if (llm === undefined || typeof llm.stream !== 'function') return undefined
-  const stream = llm.stream.bind(llm)
-  return async (system, user, signal) => {
-    let text = ''
-    const chunks = stream({
-      provider: judge.provider,
-      model: judge.model,
-      system,
-      messages: [{ role: 'user', content: [{ type: 'text', text: user }] }],
-      signal,
-    })
-    let finish = ''
-    for await (const chunk of chunks) {
-      if (chunk === null || typeof chunk !== 'object') continue
-      if (chunk.type === 'text-delta') {
-        if (typeof chunk.text === 'string') text += chunk.text
-        continue
-      }
-      if (chunk.type === 'finish') finish = String(chunk.reason ?? 'unknown')
-    }
-    if (text.trim() === '') {
-      // 空文本几乎总是流以非 stop 的原因结束：把原因带出去，别让它变成“无法解析”。
-      throw new Error(`模型未返回文本（finish=${finish === '' ? 'none' : finish}）`)
-    }
-    return text
-  }
-}
-
 /** ping 的响应体；Client 徽章也读同一份。 */
 function ping(): { ok: boolean; version: string; at: string } {
   return { ok: true, version: VERSION, at: new Date().toISOString() }
-}
-
-/**
- * 数据库不可用时的空转分支：不注册工具与数据路由，只留一条提示让模型转告用户。
- * @param ctx - 插件上下文。
- * @param error - 打开数据库时的错误。
- */
-function applyDegraded(ctx: Context, error: unknown): void {
-  const detail = error instanceof SchemaTooNewError
-    ? `数据库 schema 版本 ${error.dbVersion} 比当前插件支持的 ${error.supportedVersion} 新`
-    : `无法打开数据库：${error instanceof Error ? error.message : String(error)}`
-  const notice = `[planner] 已降级空转：${detail}。插件已加载但未注册任何工具或路由。`
-  console.error(notice)
-  ctx.effect(() => ctx.systemPrompt.section({
-    name: PROMPT_BLOCK,
-    order: PROMPT_ORDER,
-    text: `个人计划插件当前不可用（已降级空转）。原因：${detail}。`
-      + '请告知用户：升级插件到与数据库匹配的版本，或修好数据库路径后重启 DSH；不要调用任何 planner_* 工具（它们没有注册）。',
-  }), 'planner: degraded prompt')
 }
 
 /**
@@ -120,11 +39,11 @@ function applyDegraded(ctx: Context, error: unknown): void {
  * @param config - 插件配置。
  */
 export function apply(ctx: Context, config: Config = {}): void {
-  let db: DatabaseSync
+  let db: ReturnType<typeof openPlannerDb>
   try {
     db = openPlannerDb(config)
   } catch (error) {
-    applyDegraded(ctx, error)
+    registerDegradedPrompt(ctx, error)
     return
   }
 
@@ -132,7 +51,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.effect(() => () => { db.close() }, 'planner: db')
 
   const judge = config.judge
-  const judgeChat = judge === undefined ? undefined : makeJudgeChat(ctx, judge)
+  const judgeChat = judge === undefined ? undefined : makeLegacyJudgeChat(ctx, judge)
   if (judge !== undefined && judgeChat === undefined) {
     console.warn('[planner] 配置了 judge 但宿主没有 llm 服务，语义评审已关闭')
   }
@@ -162,13 +81,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     return () => { for (const dispose of disposers) dispose() }
   }, 'planner: tools')
 
-  ctx.effect(() => ctx.systemPrompt.section({
-    name: PROMPT_BLOCK,
-    order: PROMPT_ORDER,
-    text: '本机装了个人计划插件（personal-planner）：用户可以让你把长期目标拆成阶段与每日任务、查进度、调整排期。'
-      + '规则：计划先 propose 出草稿并做容量校验，用户确认后才能 commit 落库；容量 fail 的计划不允许提交；'
-      + '不要声称任务已创建，除非 plan_commit 返回成功。容量规则存在数据库里，不在配置里。',
-  }), 'planner: prompt')
+  registerLegacyPlannerPrompt(ctx)
 
   ctx.effect(() => {
     const disposers = createPlannerRoutes(service).map((route) => ctx.webServer.register(route))
