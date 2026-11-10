@@ -5,7 +5,7 @@
  * 索引合法、日期在 [today, deadline] 内、P0 不动（除非显式允许）、挪完每天不超容量。
  * @module @local/planner/reschedule
  */
-import type { Issue, Priority } from './types.js'
+import type { Issue, Priority } from './core/types.js'
 
 export interface RescheduleEntry {
   /** 在扁平任务列表里的下标（phases 顺序 + loose 顺序）。 */

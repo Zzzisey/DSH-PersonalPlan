@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { capacityBetween, checkCapacity, checkGoalCapacity, evaluatePlan, limitFor, MAX_TASK_MINUTES } from '../src/planning.ts'
-import type { CapacityRules } from '../src/types.ts'
+import { capacityBetween, checkCapacity, checkGoalCapacity, evaluatePlan, limitFor, MAX_TASK_MINUTES } from '../src/core/validation/capacity.ts'
+import type { CapacityRules } from '../src/core/types.ts'
 
 const rules: CapacityRules = { weekdayMinutes: 240, weekendMinutes: 120, overrides: { '2026-10-31': 60 } }
 

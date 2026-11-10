@@ -8,8 +8,8 @@
 import type { DatabaseSync } from 'node:sqlite'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { getCapacity, listGoals, listTasks, setCapacity, updateTasks } from '../db/repo.js'
-import { capacityBetween, checkCapacity, limitFor, monthGrid, todayInShanghai } from '../planning.js'
-import type { CapacityRules, Task, TaskStatus } from '../types.js'
+import { capacityBetween, checkCapacity, limitFor, monthGrid, todayInShanghai } from '../core/validation/capacity.js'
+import type { CapacityRules, Task, TaskStatus } from '../core/types.js'
 import { isLoopbackRequest, readJsonBody, writeJson } from './http.js'
 
 const ROUTE = '/personal-planner'

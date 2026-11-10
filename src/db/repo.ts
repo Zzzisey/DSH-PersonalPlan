@@ -18,7 +18,7 @@ import type {
   Task,
   TaskStatus,
   Verdict,
-} from '../types.js'
+} from '../core/types.js'
 
 const GOAL_COLUMNS = 'id, title, motivation, deadline, status, created_at AS createdAt, updated_at AS updatedAt'
 const PHASE_COLUMNS = 'id, goal_id AS goalId, title, seq, start_day AS startDay, end_day AS endDay, status, created_at AS createdAt, updated_at AS updatedAt'

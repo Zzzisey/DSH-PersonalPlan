@@ -6,7 +6,7 @@
  * 口径见 DESIGN §8.2：超时或输出无法解析 → `unverified`，绝不假装审过。
  * @module @local/planner/judge
  */
-import type { Issue } from './types.js'
+import type { Issue } from './core/types.js'
 
 export interface JudgeTask {
   title: string

@@ -27,9 +27,9 @@ import {
   updateTasks,
 } from './db/repo.js'
 import { runJudge, type JudgeChat, type JudgeVerdict } from './judge.js'
-import { addDays, capacityBetween, checkCapacity, evaluatePlan, limitFor, todayInShanghai, type PlanEntry, type PlanVerdict } from './planning.js'
+import { addDays, capacityBetween, checkCapacity, evaluatePlan, limitFor, todayInShanghai, type PlanEntry, type PlanVerdict } from './core/validation/capacity.js'
 import { runReschedule, type Move, type RescheduleChat } from './reschedule.js'
-import type { CapacityRules, DayLoad, DraftMode, GoalStatus, Issue, Priority, Task, TaskStatus, Verdict } from './types.js'
+import type { CapacityRules, DayLoad, DraftMode, GoalStatus, Issue, Priority, Task, TaskStatus, Verdict } from './core/types.js'
 
 /** 工具层的可选依赖：语义评审 + 自动挪动都复用模型通道。 */
 export interface PlannerToolOptions {

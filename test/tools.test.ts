@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { addDays, todayInShanghai } from '../src/planning.ts'
+import { addDays, todayInShanghai } from '../src/core/validation/capacity.ts'
 import {
   createGoal,
   getDraft,

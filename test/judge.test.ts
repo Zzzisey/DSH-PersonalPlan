@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { dropDuplicates, mergeVerdict, parseJudgeReply, runJudge, type JudgeChat, type JudgeInput } from '../src/judge.ts'
-import type { Issue } from '../src/types.ts'
+import type { Issue } from '../src/core/types.ts'
 
 const input: JudgeInput = {
   goal: { title: '两周拿到 3 个面试', motivation: '换工作', deadline: '2026-11-08' },
