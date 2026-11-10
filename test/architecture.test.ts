@@ -49,3 +49,10 @@ test('Core 只能依赖 Core 内部文件，且不导入 DSH、SQLite、HTTP 或
     }
   }
 })
+
+test('Tool、Route 与插件入口不直接依赖 SQLite Repo', () => {
+  for (const file of ['src/tools.ts', 'src/api/routes.ts', 'src/index.ts']) {
+    const source = readFileSync(resolve(file), 'utf8')
+    assert.doesNotMatch(source, /(?:db\/repo|node:sqlite)/, `${file} 必须通过 PlannerService 访问计划数据`)
+  }
+})
