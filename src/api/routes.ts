@@ -5,11 +5,10 @@
  * 失败 `{ ok: false, error }`；任务形状对客户端只暴露它会用到的字段。
  * @module @local/planner/api/routes
  */
-import type { DatabaseSync } from 'node:sqlite'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
-import { getCapacity, listGoals, listTasks, setCapacity, updateTasks } from '../db/repo.js'
-import { capacityBetween, checkCapacity, limitFor, monthGrid, todayInShanghai } from '../core/validation/capacity.js'
+import { todayInShanghai } from '../core/validation/capacity.js'
 import type { CapacityRules, Task, TaskStatus } from '../core/types.js'
+import { PlannerService } from '../host/planner-service.js'
 import { isLoopbackRequest, readJsonBody, writeJson } from './http.js'
 
 const ROUTE = '/personal-planner'
@@ -57,97 +56,18 @@ function dayOf(url: URL): string | undefined {
 }
 
 /** 月网格 + 目标进度 + 当前容量。 */
-function monthPayload(db: DatabaseSync, month: string): unknown {
-  const grid = monthGrid(month)
-  const capacity = getCapacity(db)
-  const from = grid[0]!
-  const to = grid[grid.length - 1]!
-  const tasks = listTasks(db, { from, to, limit: 200 })
-
-  const byDay = new Map<string, { planned: number; count: number }>()
-  for (const task of tasks) {
-    if (task.day === null) continue
-    const entry = byDay.get(task.day) ?? { planned: 0, count: 0 }
-    entry.count += 1
-    if (task.status !== 'done' && task.status !== 'dropped') entry.planned += task.estMinutes
-    byDay.set(task.day, entry)
-  }
-
-  const days = grid.map((day) => {
-    const entry = byDay.get(day)
-    return {
-      day,
-      planned: entry?.planned ?? 0,
-      limit: limitFor(day, capacity),
-      count: entry?.count ?? 0,
-      inMonth: day.slice(0, 7) === month,
-    }
-  })
-
-  const today = todayInShanghai()
-  const goals = listGoals(db, 'active').map((goal) => {
-    const mine = listTasks(db, { goalId: goal.id, limit: 200 })
-    const done = mine.filter((task) => task.status === 'done').length
-    const total = mine.length
-    const remaining = mine
-      .filter((task) => task.status !== 'done' && task.status !== 'dropped')
-      .reduce((sum, task) => sum + task.estMinutes, 0)
-    const deadline = goal.deadline
-    let atRisk = false
-    if (deadline !== null) {
-      const usable = deadline < today ? 0 : capacityBetween(today, deadline, capacity)
-      atRisk = remaining > usable
-    }
-    return {
-      id: goal.id,
-      title: goal.title,
-      deadline,
-      done,
-      total,
-      percent: total === 0 ? 0 : Math.round((done / total) * 100),
-      atRisk,
-    }
-  })
-
-  // 未排期任务单独列出来：它们不在任何一天里，日历上看不到，但也不能就这样消失。
-  const unscheduled = listTasks(db, { limit: 200 })
-    .filter((task) => task.day === null && task.status !== 'done' && task.status !== 'dropped')
-    .map(publicTask)
-
-  return { ok: true, month, today, days, goals, capacity, unscheduled }
+function monthPayload(service: PlannerService, month: string): unknown {
+  const view = service.queryCalendarMonth(month)
+  return { ...view, ok: true, unscheduled: view.unscheduled.map(publicTask) }
 }
 
 /** 某一天的任务清单 + 当日负载。 */
-function dayPayload(db: DatabaseSync, day: string): unknown {
-  const capacity = getCapacity(db)
-  const tasks = listTasks(db, { from: day, to: day, limit: 200 })
-  const planned = tasks
-    .filter((task) => task.status !== 'done' && task.status !== 'dropped')
-    .reduce((sum, task) => sum + task.estMinutes, 0)
-  return {
-    ok: true,
-    day,
-    planned,
-    limit: limitFor(day, capacity),
-    tasks: tasks.map(publicTask),
-  }
+function dayPayload(service: PlannerService, day: string): unknown {
+  const view = service.queryCalendarDay(day)
+  return { ...view, ok: true, tasks: view.tasks.map(publicTask) }
 }
 
-/** 受影响日期的容量报告；没有日期则返回 undefined。 */
-function reportFor(db: DatabaseSync, days: string[]): unknown {
-  const sorted = [...new Set(days)].sort()
-  if (sorted.length === 0) return undefined
-  const from = sorted[0]!
-  const to = sorted[sorted.length - 1]!
-  const tasks = listTasks(db, { from, to, limit: 200 })
-    .filter((task) => task.day !== null && sorted.includes(task.day))
-  return checkCapacity(
-    tasks.map((task) => ({ title: task.title, day: task.day, estMinutes: task.estMinutes })),
-    getCapacity(db),
-  )
-}
-
-async function patchTasks(db: DatabaseSync, req: Parameters<WebRoute['handler']>[0], res: Parameters<WebRoute['handler']>[1]): Promise<void> {
+async function patchTasks(service: PlannerService, req: Parameters<WebRoute['handler']>[0], res: Parameters<WebRoute['handler']>[1]): Promise<void> {
   const body = await readJsonBody(req)
   if (!Array.isArray(body)) {
     writeJson(res, 400, { ok: false, error: 'expected a JSON array' })
@@ -158,7 +78,7 @@ async function patchTasks(db: DatabaseSync, req: Parameters<WebRoute['handler']>
     return
   }
 
-  const patches: Parameters<typeof updateTasks>[1] = []
+  const patches: Parameters<PlannerService['updateTasks']>[0] = []
   for (const [index, raw] of body.entries()) {
     const item = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
     const id = typeof item.id === 'string' && item.id !== '' ? item.id : undefined
@@ -184,15 +104,14 @@ async function patchTasks(db: DatabaseSync, req: Parameters<WebRoute['handler']>
   }
 
   try {
-    const tasks = updateTasks(db, patches)
-    const report = reportFor(db, tasks.map((task) => task.day).filter((day): day is string => day !== null))
-    writeJson(res, 200, { ok: true, tasks: tasks.map(publicTask), ...(report === undefined ? {} : { report }) })
+    const result = service.updateTasks(patches)
+    writeJson(res, 200, { ok: true, tasks: result.tasks.map(publicTask), ...(result.report === undefined ? {} : { report: result.report }) })
   } catch (error) {
     writeJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
   }
 }
 
-async function putCapacity(db: DatabaseSync, req: Parameters<WebRoute['handler']>[0], res: Parameters<WebRoute['handler']>[1]): Promise<void> {
+async function putCapacity(service: PlannerService, req: Parameters<WebRoute['handler']>[0], res: Parameters<WebRoute['handler']>[1]): Promise<void> {
   const body = await readJsonBody(req)
   if (body === undefined) {
     writeJson(res, 400, { ok: false, error: 'invalid JSON body' })
@@ -215,28 +134,19 @@ async function putCapacity(db: DatabaseSync, req: Parameters<WebRoute['handler']
     overrides: (overrides ?? {}) as Record<string, number>,
   }
   try {
-    setCapacity(db, rules)
+    const result = service.updateCapacity(rules)
+    writeJson(res, 200, { ok: true, ...result })
   } catch (error) {
     writeJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
-    return
   }
-  const today = todayInShanghai()
-  const month = today.slice(0, 7)
-  const grid = monthGrid(month)
-  const tasks = listTasks(db, { from: grid[0]!, to: grid[grid.length - 1]!, limit: 200 })
-  const report = checkCapacity(
-    tasks.map((task) => ({ title: task.title, day: task.day, estMinutes: task.estMinutes })),
-    getCapacity(db),
-  )
-  writeJson(res, 200, { ok: true, capacity: getCapacity(db), report })
 }
 
 /**
  * 构造面板路由。
- * @param db - 已打开的连接。
+ * @param service - 唯一业务入口。
  * @returns 一条覆盖 `/personal-planner` 前缀的路由。
  */
-export function createPlannerRoutes(db: DatabaseSync): WebRoute[] {
+export function createPlannerRoutes(service: PlannerService): WebRoute[] {
   return [{
     kind: 'prefix',
     path: ROUTE,
@@ -253,7 +163,7 @@ export function createPlannerRoutes(db: DatabaseSync): WebRoute[] {
           return
         }
         if (req.method === 'GET' && path === `${ROUTE}/api/month`) {
-          writeJson(res, 200, monthPayload(db, monthOf(url)))
+          writeJson(res, 200, monthPayload(service, monthOf(url)))
           return
         }
         if (req.method === 'GET' && path === `${ROUTE}/api/day`) {
@@ -262,15 +172,15 @@ export function createPlannerRoutes(db: DatabaseSync): WebRoute[] {
             writeJson(res, 400, { ok: false, error: '需要 day=YYYY-MM-DD' })
             return
           }
-          writeJson(res, 200, dayPayload(db, day))
+          writeJson(res, 200, dayPayload(service, day))
           return
         }
         if (req.method === 'PATCH' && path === `${ROUTE}/api/tasks`) {
-          await patchTasks(db, req, res)
+          await patchTasks(service, req, res)
           return
         }
         if (req.method === 'PUT' && path === `${ROUTE}/api/capacity`) {
-          await putCapacity(db, req, res)
+          await putCapacity(service, req, res)
           return
         }
         writeJson(res, 404, { ok: false, error: 'not found' })

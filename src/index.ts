@@ -131,23 +131,23 @@ export function apply(ctx: Context, config: Config = {}): void {
   // 先登记关库：cordis 按注册逆序释放，所以它会最后执行，避免工具还在用时连接已关。
   ctx.effect(() => () => { db.close() }, 'planner: db')
 
+  const judge = config.judge
+  const judgeChat = judge === undefined ? undefined : makeJudgeChat(ctx, judge)
+  if (judge !== undefined && judgeChat === undefined) {
+    console.warn('[planner] 配置了 judge 但宿主没有 llm 服务，语义评审已关闭')
+  }
+  const service = new PlannerService(new SqlitePlannerRepository(db), judgeChat === undefined
+    ? {}
+    : {
+      judgeChat,
+      // 自动挪动复用同一条模型通道：语义评审与语义挪动是同一类调用。
+      rescheduleChat: judgeChat,
+      judgeModel: judge === undefined ? '' : `${judge.provider}/${judge.model}`,
+      ...(judge?.timeoutMs === undefined ? {} : { judgeTimeoutMs: judge.timeoutMs, rescheduleTimeoutMs: judge.timeoutMs }),
+      ...(judge?.maxIssues === undefined ? {} : { judgeMaxIssues: judge.maxIssues }),
+    })
+
   ctx.effect(() => {
-    const judge = config.judge
-    const judgeChat = judge === undefined ? undefined : makeJudgeChat(ctx, judge)
-    if (judge !== undefined && judgeChat === undefined) {
-      console.warn('[planner] 配置了 judge 但宿主没有 llm 服务，语义评审已关闭')
-    }
-    const toolOptions = judgeChat === undefined
-      ? {}
-      : {
-        judgeChat,
-        // 自动挪动复用同一条模型通道：语义评审与语义挪动是同一类调用。
-        rescheduleChat: judgeChat,
-        judgeModel: judge === undefined ? '' : `${judge.provider}/${judge.model}`,
-        ...(judge?.timeoutMs === undefined ? {} : { judgeTimeoutMs: judge.timeoutMs, rescheduleTimeoutMs: judge.timeoutMs }),
-        ...(judge?.maxIssues === undefined ? {} : { judgeMaxIssues: judge.maxIssues }),
-      }
-    const service = new PlannerService(new SqlitePlannerRepository(db), toolOptions)
     const disposers = createPlannerTools(service).map((tool) => ctx.tools.register(tool))
     disposers.push(ctx.tools.register(defineTool({
       name: 'planner_ping',
@@ -171,7 +171,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   }), 'planner: prompt')
 
   ctx.effect(() => {
-    const disposers = createPlannerRoutes(db).map((route) => ctx.webServer.register(route))
+    const disposers = createPlannerRoutes(service).map((route) => ctx.webServer.register(route))
     return () => { for (const dispose of disposers) dispose() }
   }, 'planner: routes')
 }
