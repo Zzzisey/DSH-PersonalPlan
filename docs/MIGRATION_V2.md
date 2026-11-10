@@ -155,6 +155,8 @@
 
 Repository 不得长期返回 `unknown` JSON，也不得在解析失败时构造空 Snapshot、默认 stage/status 或空 validation。损坏记录必须返回稳定错误。
 
+阶段三的 `SqlitePlannerRepository → db/repo.ts` 只是为了先建立调用边界。阶段四在新增 Proposal 数据访问前先做一个不改变行为的收敛提交：保留 `PlannerRepository` 接口供 Service 单测，删除纯转发类，由 `src/db/repo.ts` 直接提供唯一 SQLite Repository 实现；DDL 继续由 `src/db/schema.ts` 单独负责。不得同时保留两套运行时数据访问实现。
+
 阶段 4 决策门采用以下结论；这些结论先于 v3 DDL 和 Repository 实现：
 
 1. 容量变化与正式计划变化统一增加 `planner_meta.schedule_version`，不增加 `capacity_version`；
@@ -163,7 +165,7 @@ Repository 不得长期返回 `unknown` JSON，也不得在解析失败时构造
 4. Goal 的 `title / acceptance_criteria / deadline / status` 会影响 ready Proposal，成功变化时增加统一版本，并在 commit 时与 baseline 逐字段比较；`motivation` 不影响 Proposal，也不增加该版本；
 5. Goal/Phase `acceptance_criteria` 的 staged 契约是 trim 后 1–1000 字符；兼容列允许 `null` 表达 legacy 未补录，禁止用空字符串代替；
 6. 第一版不允许 override 超容量或超过截止日期，正式 verdict 只使用 `valid / invalid`；
-7. `PlanProposal`、两个 Snapshot、local id、ordering constraints 与 validation JSON 的准确结构以 `ARCHITECTURE_V2.md` 第 4 节为唯一类型契约，后续 Core codec、DDL 行映射和 Repository 不得另定义近似结构。
+7. `PlanProposal`、两个 Snapshot、local id、ordering constraints 与 validation JSON 的准确结构以 `ARCHITECTURE_V2.md` 第 4 节为唯一类型契约：一个 Proposal.stage、一份规范化 Candidate、精简 validation；后续 Core codec、DDL 行映射和 Repository 不得另定义近似结构。
 
 ### 8.1 目标
 

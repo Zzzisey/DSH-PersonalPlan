@@ -165,9 +165,9 @@ V2 对 Phase 的 `acceptance_criteria` 采用与 Goal 相同的 1–1000 字符�
 - 局部修改：准备增删或修改部分阶段、任务；
 - 重新规划：保留完成内容，删除不合理的未完成内容，并生成新计划。
 
-`PlanProposal` 自身持久化完整候选计划，以便工具和 GUI 共享。候选阶段和任务不是正式计划，不能参与正常任务查询和容量占用。
+`PlanProposal` 自身持久化一份规范化的完整候选计划，以便工具和 GUI 共享。Agent 每阶段只提交允许修改的字段，Host 校验后合并进这份 Candidate；Agent 的阶段输入不是另一份持久化快照。候选阶段和任务不是正式计划，不能参与正常任务查询和容量占用。
 
-提案的内容阶段与生命周期状态分开表达：
+提案的下一步阶段与生命周期状态分开表达。`stage` 是唯一阶段事实源，表示下一次允许接受的阶段提交；Candidate 不再保存第二个 `contentStage`：
 
 ```text
 stage: structure → estimate → schedule → ready

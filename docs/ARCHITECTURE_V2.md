@@ -154,6 +154,8 @@ PlannerService 负责：
 - 组织提交事务；
 - 产生 Client 和 Tool 所需的结构化结果。
 
+少量简单 Goal/Task 方法在迁移期可以只是 Repository 转发；它们仍提供 Tool 与 Route 的统一入口。不要为了消除一行转发让 Adapter 直接访问数据库，也不要继续增加 Manager、Gateway 或第二层 Service。真正的业务编排集中在 Proposal、Preview、Commit 等用例中。
+
 文件功能范围：
 
 | 文件 | 负责 |
@@ -164,13 +166,15 @@ PlannerService 负责：
 
 `PlannerRepository` 是 PlannerService 与 SQLite 之间的窄接口。它的目的不是预设将来一定换数据库，而是隔离 SQL、事务和迁移细节，支持 Service 单测。
 
-建议结构：
+最终只保留一个 SQLite 运行时数据访问实现；DDL 仍单独放在 Schema：
 
 ```text
-src/host/
-├── repository.ts
-├── sqlite-repository.ts
-└── schema.ts
+src/
+├── host/
+│   └── repository.ts
+└── db/
+    ├── repo.ts
+    └── schema.ts
 ```
 
 文件功能范围：
@@ -178,8 +182,10 @@ src/host/
 | 文件 | 负责 |
 |---|---|
 | `src/host/repository.ts` | 定义 PlannerRepository 接口、查询条件、事务输入输出和持久化错误类型，供 Service 与测试实现依赖 |
-| `src/host/sqlite-repository.ts` | 实现 PlannerRepository，负责 SQL、行映射、预编译语句、条件更新、事务和 SQLite 错误归一化 |
-| `src/host/schema.ts` | 定义 schema version、DDL、向前迁移、数据库打开参数和迁移完整性检查 |
+| `src/db/repo.ts` | 唯一 SQLite Repository 实现，导出绑定数据库连接的 `PlannerRepository` 对象，负责运行时查询/写入、行映射、条件写入、事务和 SQLite 错误归一化 |
+| `src/db/schema.ts` | 定义 schema version、DDL、向前迁移、数据库打开参数和迁移完整性检查 |
+
+当前 `SqlitePlannerRepository → db/repo.ts` 的逐方法转发只属于阶段三的过渡脚手架。阶段四在不改变行为的独立提交中把装配收敛到 `db/repo.ts`，删除纯转发类；不能让新 Proposal 数据访问与旧数据访问分散在两个 Repository 实现中。
 
 Repository 负责：
 
@@ -193,26 +199,7 @@ Repository 返回业务数据，不返回面向用户的自然语言错误。并
 
 ### 3.4 DSH Tools
 
-建议结构：
-
-```text
-src/host/tools/
-├── index.ts
-├── goals.ts
-├── plans.ts
-├── tasks.ts
-└── presentation.ts
-```
-
-文件功能范围：
-
-| 文件 | 负责 |
-|---|---|
-| `src/host/tools/index.ts` | 汇总 ToolDefinition，统一注册和释放，并根据 `planningFlow` 选择 legacy 或 staged 工具集 |
-| `src/host/tools/goals.ts` | 定义目标创建、查询和允许的目标更新工具，并把参数映射为 PlannerService Goal Command |
-| `src/host/tools/plans.ts` | 定义四种场景入口和 Proposal advance/get/commit/discard，从 `exec.agent` 提取 Session 身份，并声明结构化输入输出 |
-| `src/host/tools/tasks.ts` | 定义正式任务查询、完成等无需重做计划的操作，并把会改变计划结构或日期的请求引导到 Proposal 场景 |
-| `src/host/tools/presentation.ts` | 把结构化 Tool 结果映射为模型可读 ContentBlock 和通用 Tool 卡片，统一标题、摘要和错误展示 |
+现阶段保留单一 `src/tools.ts`：汇总 ToolDefinition，根据 `planningFlow` 选择 legacy 或 staged 工具集，并把参数映射为 PlannerService Command。只有当 goals/plans/tasks 的定义已经可以独立演进且单文件明显妨碍审查时才拆分；不预建纯转发文件。
 
 Tool 是 DSH Agent 到 PlannerService 的适配器，只负责：
 
@@ -249,7 +236,7 @@ V2 暂定向 Agent 暴露四个语义互斥的场景入口：
 
 ### 3.5 Host API
 
-`src/host/routes.ts` 只负责：
+`src/api/routes.ts` 只负责：
 
 ```text
 HTTP 输入校验
@@ -272,7 +259,7 @@ HTTP 输入校验
 
 | 文件 | 负责 |
 |---|---|
-| `src/host/routes.ts` | 注册 Host 路由，校验传输层参数，调用 PlannerService，把业务结果映射为 HTTP 状态与 JSON，并处理分页、月份范围和响应裁剪 |
+| `src/api/routes.ts` | 注册 Host 路由，校验传输层参数，调用 PlannerService，把业务结果映射为 HTTP 状态与 JSON，并处理分页、月份范围和响应裁剪 |
 
 ### 3.6 Client
 
@@ -474,53 +461,57 @@ interface PlanSnapshotV1 {
 }
 ```
 
-`candidate_json` 是 `ProposalSnapshotV1`。`contentStage` 是当前已持久化内容的完整度，不等同于 `PlanProposal.stage`（后者表示下一步允许提交什么）。字段必须按 discriminated union 严格出现：structure 不得含 `estMinutes/day`，estimate 必须含 `estMinutes` 且不得含 `day`，schedule 必须同时含两者。`ready` 只允许 `contentStage = 'schedule'`。
+`candidate_json` 是一份规范化、完整的 `ProposalSnapshotV1`，不再保存第二个 `contentStage`。`PlanProposal.stage` 是阶段的唯一事实源，表示下一次允许提交的阶段；`ready` 表示 Candidate 已通过 schedule 校验。尚未估时或排期使用业务上真实的 `null`，不是读取失败后的默认值。
 
 ```ts
-interface ProposalPhaseBase<TaskShape> {
+interface ProposalPhaseSnapshot {
   localId: PhaseLocalId
   sourcePhaseId: string | null
   title: string
   acceptanceCriteria: string
   seq: number
   completion: CompletionSnapshot
-  tasks: TaskShape[]
+  tasks: ProposalTaskSnapshot[]
 }
 
-interface ProposalTaskBase {
+interface ProposalTaskSnapshot {
   localId: TaskLocalId
   sourceTaskId: string | null
   title: string
   priority: 'P0' | 'P1' | 'P2'
   seq: number
   completion: CompletionSnapshot
+  estMinutes: number | null
+  day: string | null
+  actualMinutes: number | null
+  note: string | null
 }
 
-type StructureTask = ProposalTaskBase
-type EstimateTask = ProposalTaskBase & { estMinutes: number }
-type ScheduleTask = ProposalTaskBase & { estMinutes: number; day: string }
-
-type ProposalSnapshotV1 =
-  | { schemaVersion: 1; contentStage: 'structure'; phases: Array<ProposalPhaseBase<StructureTask>> }
-  | { schemaVersion: 1; contentStage: 'estimate'; phases: Array<ProposalPhaseBase<EstimateTask>> }
-  | { schemaVersion: 1; contentStage: 'schedule'; phases: Array<ProposalPhaseBase<ScheduleTask>> }
+interface ProposalSnapshotV1 {
+  schemaVersion: 1
+  phases: ProposalPhaseSnapshot[]
+}
 ```
+
+create 场景的最小推进规则是：structure 接受后所有 Task 的 `estMinutes/day` 仍为 `null` 并进入 estimate；estimate 接受后 `estMinutes` 有值、`day` 仍为 `null` 并进入 schedule；schedule 接受后两者均有值并进入 ready。其他 operation 的允许差异由同一 Validator 根据 operation 判断，不增加第二个阶段字段。
+
+Agent 的 structure / estimate / schedule 提交参数是独立 Command DTO，不是 `candidate_json` 的三份变体。Tool 只接收当前阶段允许修改的字段；Host 校验后把变化合并进同一份完整 Candidate，并保留 Agent 无权修改的 `completion / actualMinutes / note / source id`。失败输入不写入 Candidate。
 
 删除通过“baseline 中有、candidate 中无”表达，不引入 tombstone。`sourcePhaseId/sourceTaskId` 连接 baseline 正式对象；新对象对应值必须为 `null`。completed 对象在允许保留它们的场景中保持同一 source id、local id 和内容，具体不可变范围在阶段 7 场景决策中冻结。
 
 #### 稳定 local id 与 ordering constraints
 
-所有 Candidate Phase/Task（包括从 baseline 复制的对象）都由 Host 分配一次 local id，并在 Proposal 全生命周期内保持不变。格式分别为 canonical lowercase UUID 前加 `plp_` 与 `plt_`，即 `plp_550e8400-e29b-41d4-a716-446655440000` 和 `plt_...`。Agent 只能引用已有 local id，不能提供、替换或按标题生成 id。Codec 必须拒绝格式错误、重复、source id 重复、Task source 与 Phase source 归属矛盾。
+所有 Candidate Phase/Task（包括从 baseline 复制的对象）都由 Host 分配一次不透明 local id，并在 Proposal 全生命周期内保持不变。Agent 只能引用 Host 返回的已有 id，不能提供新 id、替换 id 或按标题生成 id。具体随机格式不是业务契约；Codec 只检查非空字符串，唯一性、source id 归属和跨引用由 Core Validator 统一检查。
 
 ```ts
-type PhaseLocalId = `plp_${string}`
-type TaskLocalId = `plt_${string}`
+type PhaseLocalId = string
+type TaskLocalId = string
 
 interface OrderingConstraint {
   predecessorTaskLocalId: TaskLocalId
   successorTaskLocalId: TaskLocalId
   strength: 'required' | 'preferred'
-  reason: string // trim 后 1–500 字符
+  reason: string
 }
 ```
 
@@ -528,24 +519,15 @@ interface OrderingConstraint {
 
 #### validation_json v1
 
-第一版不允许容量或截止日期 override，因此 verdict 只有 `valid / invalid`。初建 Proposal 尚未校验不是空 validation 或解析 fallback，而是显式、带 revision 的 `pending` 分支。
+第一版不允许容量或截止日期 override，因此 verdict 只有 `valid / invalid`。初建 Proposal 尚未校验使用显式 `pending`，不是解析失败的 fallback。validation 只保存当前 Candidate 最近一次成功校验结果，不复制 Proposal 的 stage、requiredStage 或 contentStage。
 
 ```ts
-type ProposalValidationCode =
-  | 'STRUCTURE_FIELD_FORBIDDEN' | 'STRUCTURE_COUNT' | 'STRUCTURE_EMPTY_PHASE'
-  | 'STRUCTURE_SEQUENCE' | 'STRUCTURE_DUPLICATE_LOCAL_ID' | 'STRUCTURE_DUPLICATE_ITEM'
-  | 'ESTIMATE_IDENTITY_CHANGED' | 'ESTIMATE_MISSING' | 'ESTIMATE_INCREMENT' | 'ESTIMATE_RANGE'
-  | 'SCHEDULE_IDENTITY_CHANGED' | 'SCHEDULE_DATE_FORMAT' | 'SCHEDULE_DEADLINE'
-  | 'SCHEDULE_DEPENDENCY_CYCLE' | 'SCHEDULE_REQUIRED_ORDER' | 'SCHEDULE_CAPACITY'
-  | 'SNAPSHOT_REFERENCE_INVALID'
-
 interface ProposalValidationIssue {
-  code: ProposalValidationCode
-  stage: 'structure' | 'estimate' | 'schedule'
+  code: string // 实际值来自 core/policy.ts 的稳定代码集合
   message: string
-  phaseLocalId: PhaseLocalId | null
-  taskLocalId: TaskLocalId | null
-  day: string | null
+  phaseLocalId?: PhaseLocalId
+  taskLocalId?: TaskLocalId
+  day?: string
 }
 
 interface CapacityValidationDay {
@@ -555,40 +537,37 @@ interface CapacityValidationDay {
   candidatePlannedMinutes: number
 }
 
-type OrderingValidation =
-  | { state: 'not_applicable' }
-  | { state: 'complete'; constraints: OrderingConstraint[] }
-
-type CapacityValidation =
-  | { state: 'not_applicable' }
-  | { state: 'checked'; days: CapacityValidationDay[] }
-
 type ProposalValidationV1 =
   | {
       schemaVersion: 1
       state: 'pending'
-      candidateRevision: number
-      requiredStage: 'structure' | 'estimate' | 'schedule'
     }
   | {
       schemaVersion: 1
       state: 'evaluated'
-      candidateRevision: number
-      contentStage: 'structure' | 'estimate' | 'schedule'
+      validatedRevision: number
+      checkedStage: 'structure' | 'estimate'
       verdict: 'valid' | 'invalid'
       issues: ProposalValidationIssue[]
-      ordering: OrderingValidation
-      capacity: CapacityValidation
-      validatedAt: string
+    }
+  | {
+      schemaVersion: 1
+      state: 'evaluated'
+      validatedRevision: number
+      checkedStage: 'schedule'
+      verdict: 'valid' | 'invalid'
+      issues: ProposalValidationIssue[]
+      orderingConstraints: OrderingConstraint[]
+      capacityDays: CapacityValidationDay[]
       scheduleVersion: number
     }
 ```
 
-`candidateRevision` 必须等于所属 Proposal 的 `revision`；`contentStage` 必须等于当前 candidate 的 discriminant。失败的 advance 输入不替换已持久化 candidate，也不把针对被拒绝输入的 validation 伪装成当前 candidate 的结果；失败 issue 直接作为命令结果返回。`schedule` 的有效结果必须具有 `ordering.state = 'complete'` 和 `capacity.state = 'checked'`。
+`validatedRevision` 必须等于所属 Proposal 的 `revision`。`checkedStage` 记录哪一个 Validator 产生了结果，不承担工作流推进；下一步仍只看 Proposal.stage。失败的 advance 输入不替换 Candidate 或 validation，失败 issue 直接作为命令结果返回。
 
 #### 严格 JSON codec
 
-阶段 4.3 在 Core 为三个 JSON 列分别提供版本化 encode/decode。decoder 的边界输入可以是 `unknown`，但成功后只返回上述正式类型；`unknown` 不得穿透到 Repository/Service。Codec 必须递归拒绝未知键、缺失键、非法枚举、非有限整数、错误 nullability、非法日期/UUID、重复 local/source id 和跨引用错误；不得补默认 stage/status/revision、空 Snapshot、空 validation 或静默忽略字段。JSON 语法错误与契约损坏统一映射为带列名和 Proposal id 的稳定 `PROPOSAL_DATA_CORRUPT` 持久化错误，同时保留底层 cause。
+阶段 4.3 在 Core 为三个 JSON 列分别提供版本化 encode/decode。decoder 的边界输入可以是 `unknown`，但成功后只返回上述正式类型；`unknown` 不得穿透到 Repository/Service。Codec 负责 JSON 结构、未知/缺失键、基础类型、枚举、有限整数、日期和 nullability；local/source id 唯一性、阶段字段规则和跨引用只由 Core Validator 实现，不能在 codec 再复制一套业务校验。Codec 不补默认 stage/status/revision、空 Snapshot、空 validation，也不静默忽略字段。JSON 语法或结构损坏映射为带列名和 Proposal id 的稳定 `PROPOSAL_DATA_CORRUPT`，并保留底层 cause。
 
 ### 4.1 完整快照语义
 
@@ -599,7 +578,7 @@ type ProposalValidationV1 =
 - `validation` 保存当前版本的结构化校验结果；
 - Agent 得到的是当前阶段所需的裁剪上下文，GUI 按月份读取服务端 Diff。
 
-`PlanProposal` 从 `structure` 阶段开始创建并持久化。`structure → estimate → schedule` 是同一份数据逐步完整的过程；`ready` 只表示当前 revision 已可预览和确认，不产生新的 Proposal 记录。
+`PlanProposal` 从 `structure` 开始。`stage` 表示下一次允许接受的阶段提交：structure 通过后变为 estimate，estimate 通过后变为 schedule，schedule 通过后变为 ready。Candidate 始终是同一份规范快照；`ready` 不产生新记录。
 
 ### 4.2 草稿内身份
 
@@ -613,7 +592,7 @@ type ProposalValidationV1 =
 
 ### 4.3 状态与阶段分离
 
-- `stage` 表示内容推进到了哪里；
+- `stage` 是唯一阶段事实源，表示下一次允许接受的阶段提交，`ready` 表示三阶段已经完成；
 - `status` 表示提案能否继续编辑、预览或提交；
 - `ready` stage 只能搭配 `awaiting_confirmation` status；
 - `committed / discarded / stale` 是终态，不能继续 advance；
@@ -643,7 +622,6 @@ planner_proposal_advance
                     ↓
           planner_proposal_advance
   ├── revise_required → 修订日期
-  ├── decision_required → 把选择交给用户
   └── ready_for_preview → 日历最终预览
 ```
 
@@ -654,7 +632,6 @@ type AdvanceProposalResult =
   | { status: 'accepted'; proposal: ProposalRef; nextStage: PlanningStage }
   | { status: 'revise_required'; proposal: ProposalRef; issues: ValidationIssue[] }
   | { status: 'return_to_structure'; proposal: ProposalRef; issues: ValidationIssue[] }
-  | { status: 'decision_required'; proposal: ProposalRef; decision: UserDecision }
   | { status: 'ready_for_preview'; proposal: ProposalRef; summary: ChangeSummary }
 ```
 
@@ -748,7 +725,6 @@ Proposal 的 committed 更新必须带 expected revision 条件。事务外检�
 - 第一段是否夹带时长和日期；
 - 第二段边界错误时是否退回第一段；
 - 是否未经用户确认调用 commit；
-- `decision_required` 是否真的交给用户；
 - 工具调用次数、Token、耗时和重试次数。
 
 ## 8. 目标目录
@@ -770,16 +746,13 @@ src/
 │   ├── config.ts
 │   ├── planner-service.ts
 │   ├── repository.ts
-│   ├── sqlite-repository.ts
-│   ├── schema.ts
-│   ├── prompt.ts
-│   ├── routes.ts
-│   └── tools/
-│       ├── index.ts
-│       ├── goals.ts
-│       ├── plans.ts
-│       ├── tasks.ts
-│       └── presentation.ts
+│   └── prompt.ts
+├── db/
+│   ├── repo.ts
+│   └── schema.ts
+├── api/
+│   └── routes.ts
+├── tools.ts
 └── client/
     ├── index.tsx
     ├── api.ts
@@ -791,6 +764,8 @@ src/
         ├── TaskList.tsx
         └── CapacityEditor.tsx
 ```
+
+这是按职责划分的上限，不要求为了匹配目录图提前拆文件。`tools.ts`、`routes.ts` 或 Client 组件只有在职责已经独立、文件明显妨碍审查时再拆分；不创建只做转发的目录和包装层。
 
 `src/index.ts` 最终只负责装配与生命周期：
 

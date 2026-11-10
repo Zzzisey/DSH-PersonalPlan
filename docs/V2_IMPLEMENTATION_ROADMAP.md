@@ -239,17 +239,18 @@ npm run build  通过
 
 验收：只改测试与 fixture，现有实现仍通过全部测试。
 
-### 请求 4.2：隔离 Schema 所有权
+### 请求 4.2：收敛唯一 SQLite Repository 实现
 
-建议提交：`refactor(host): isolate schema migration boundary`
+建议提交：`refactor(storage): consolidate sqlite repository implementation`
 
 工作：
 
-- 将 Schema 打开、版本检测和迁移责任收敛到目标 Host 边界；
-- 保持 `user_version = 2` 和全部 DDL 行为不变；
-- 更新导入与架构测试，不夹带 v3 Schema。
+- 保留 `PlannerRepository` 作为 PlannerService 的轻量测试边界；
+- 让 `src/db/repo.ts` 直接导出绑定数据库连接的 Repository 对象，删除 `SqlitePlannerRepository → db/repo.ts` 的纯转发类；
+- 运行时查询/写入只由 `src/db/repo.ts` 实现，DDL 只由 `src/db/schema.ts` 实现；
+- 保持 `user_version = 2`、DDL、事务和全部用户行为不变，不夹带 Proposal 类型或 v3 Schema。
 
-验收：纯移动/接线提交，外部行为和数据库字节语义不变。
+验收：纯接线提交，PlannerService 仍可注入 fake Repository，外部行为和数据库字节语义不变。
 
 ### 请求 4.3：先定义 Proposal 类型与持久化契约
 
@@ -257,7 +258,10 @@ npm run build  通过
 
 工作：
 
-- 在 Core 定义 `PlanProposal`、`PlanSnapshot`、`ProposalSnapshot`、阶段/任务 local id、`OrderingConstraint`、`ProposalValidation` 和 JSON 可持久化值类型；
+- 在 Core 定义 `PlanProposal`、`PlanSnapshot`、单一规范化 `ProposalSnapshot`、阶段/任务 local id、`OrderingConstraint`、精简 `ProposalValidation` 和 JSON 可持久化值类型；
+- `PlanProposal.stage` 是唯一阶段事实源；Candidate 不保存 `contentStage`，validation 不复制 `requiredStage/contentStage`；
+- Candidate 使用一套完整 Task 结构，显式保留 `completion / actualMinutes / note`，未估时或未排期分别使用业务含义明确的 `null`；
+- Agent 的 structure/estimate/schedule Command DTO 与持久化 Candidate 分离，Host 校验后合并，失败输入不写入；
 - 明确 `stage`、`status`、`operation` 与 revision 的类型，但本请求不实现状态转换；
 - Core 提供不依赖 SQLite 的纯 JSON codec；Host Repository 边界声明 Row 映射责任，Core 不导入 SQLite 类型；
 - JSON 列解析失败、必需字段缺失或枚举非法时返回稳定的损坏数据错误；
@@ -286,7 +290,7 @@ npm run build  通过
 
 工作：
 
-- 使用请求 4.3 已定义的类型与 codec，增加 PlanProposal 的创建、按 id/owner 查询和状态查询；
+- 在请求 4.2 的唯一 SQLite 实现中，使用请求 4.3 已定义的类型与 codec，增加 PlanProposal 的创建、按 id/owner 查询和状态查询；
 - 增加 `expectedRevision` 条件更新；
 - 增加终态保护所需的条件写入；
 - 增加 schedule/capacity 版本读取；
@@ -326,6 +330,7 @@ npm run build  通过
 
 - 默认仍为 legacy；
 - 没有 staged Tool 暴露；
+- PlannerService 与 Repository 接口保留，但运行时数据访问只有 `src/db/repo.ts` 一个实现位置，不再存在纯转发 Adapter；
 - Proposal 类型与严格 codec 先于 Schema/Repository 实现，不存在第二套存储专用业务类型；
 - v3 是只增不删的兼容迁移；
 - `draft/check_log` 完整保留；
