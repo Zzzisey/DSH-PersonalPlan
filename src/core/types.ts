@@ -90,3 +90,153 @@ export interface CapacityRules {
   weekendMinutes: number
   overrides: Record<string, number>
 }
+
+// ---------------------------------------------------------------- staged proposal storage contracts
+
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
+export type ProposalOperation = 'create' | 'reschedule' | 'modify' | 'replan'
+export type PlanningStage = 'structure' | 'estimate' | 'schedule' | 'ready'
+export type ProposalStatus = 'editing' | 'awaiting_confirmation' | 'committed' | 'discarded' | 'stale'
+export type PhaseLocalId = string
+export type TaskLocalId = string
+
+export type CompletionSnapshot =
+  | { isCompleted: false; completedAt: null }
+  | { isCompleted: true; completedAt: string | null }
+
+export interface PlanSnapshotV1 {
+  schemaVersion: 1
+  goal: {
+    id: string
+    title: string
+    acceptanceCriteria: string | null
+    deadline: string | null
+    status: GoalStatus
+  }
+  phases: Array<{
+    id: string
+    title: string
+    acceptanceCriteria: string | null
+    seq: number
+    completion: CompletionSnapshot
+    tasks: Array<{
+      id: string
+      title: string
+      priority: Priority
+      estMinutes: number
+      day: string | null
+      seq: number
+      completion: CompletionSnapshot
+      actualMinutes: number | null
+      note: string | null
+    }>
+  }>
+}
+
+export interface ProposalTaskSnapshot {
+  localId: TaskLocalId
+  sourceTaskId: string | null
+  title: string
+  priority: Priority
+  seq: number
+  completion: CompletionSnapshot
+  estMinutes: number | null
+  day: string | null
+  actualMinutes: number | null
+  note: string | null
+}
+
+export interface ProposalPhaseSnapshot {
+  localId: PhaseLocalId
+  sourcePhaseId: string | null
+  title: string
+  acceptanceCriteria: string
+  seq: number
+  completion: CompletionSnapshot
+  tasks: ProposalTaskSnapshot[]
+}
+
+export interface ProposalSnapshotV1 {
+  schemaVersion: 1
+  phases: ProposalPhaseSnapshot[]
+}
+
+export interface OrderingConstraint {
+  predecessorTaskLocalId: TaskLocalId
+  successorTaskLocalId: TaskLocalId
+  strength: 'required' | 'preferred'
+  reason: string
+}
+
+export interface ProposalValidationIssue {
+  code: string
+  message: string
+  phaseLocalId?: PhaseLocalId
+  taskLocalId?: TaskLocalId
+  day?: string
+}
+
+export interface CapacityValidationDay {
+  day: string
+  limitMinutes: number
+  externalPlannedMinutes: number
+  candidatePlannedMinutes: number
+}
+
+export type ProposalValidationV1 =
+  | { schemaVersion: 1; state: 'pending' }
+  | {
+      schemaVersion: 1
+      state: 'evaluated'
+      validatedRevision: number
+      checkedStage: 'structure' | 'estimate'
+      verdict: 'valid' | 'invalid'
+      issues: ProposalValidationIssue[]
+    }
+  | {
+      schemaVersion: 1
+      state: 'evaluated'
+      validatedRevision: number
+      checkedStage: 'schedule'
+      verdict: 'valid' | 'invalid'
+      issues: ProposalValidationIssue[]
+      orderingConstraints: OrderingConstraint[]
+      capacityDays: CapacityValidationDay[]
+      scheduleVersion: number
+    }
+
+export interface PlanProposal {
+  id: string
+  goalId: string
+  ownerSessionId: string
+  operation: ProposalOperation
+  stage: PlanningStage
+  status: ProposalStatus
+  revision: number
+  baseScheduleVersion: number
+  baseline: PlanSnapshotV1
+  candidate: ProposalSnapshotV1
+  validation: ProposalValidationV1
+  createdAt: string
+  updatedAt: string
+  expiresAt: string | null
+}
+
+/** Agent 阶段输入；与持久化的完整 Candidate 分离。 */
+export interface StructureProposalCommand {
+  phases: Array<{
+    title: string
+    acceptanceCriteria: string
+    seq: number
+    tasks: Array<{ title: string; priority: Priority; seq: number }>
+  }>
+}
+
+export interface EstimateProposalCommand {
+  tasks: Array<{ taskLocalId: TaskLocalId; estMinutes: number }>
+}
+
+export interface ScheduleProposalCommand {
+  tasks: Array<{ taskLocalId: TaskLocalId; day: string }>
+  orderingConstraints: OrderingConstraint[]
+}
