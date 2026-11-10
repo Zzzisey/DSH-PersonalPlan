@@ -36,7 +36,11 @@ import type { CapacityRules, DraftStatus, Verdict } from '../core/types.js'
 
 /** 现有函数式 Repo 的 SQLite adapter；阶段三只改变调用边界，不改变 SQL。 */
 export class SqlitePlannerRepository implements PlannerRepository {
-  constructor(private readonly db: DatabaseSync) {}
+  private readonly db: DatabaseSync
+
+  constructor(db: DatabaseSync) {
+    this.db = db
+  }
 
   createGoal(input: CreateGoalInput) { return createGoal(this.db, input) }
   getGoal(id: string) { return getGoal(this.db, id) }
