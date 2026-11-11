@@ -18,7 +18,17 @@ import type {
   Task,
   TaskStatus,
   Verdict,
+  PlanProposal,
+  ProposalStatus,
 } from '../core/types.js'
+import {
+  decodePlanSnapshot,
+  decodeProposalSnapshot,
+  decodeProposalValidation,
+  encodePlanSnapshot,
+  encodeProposalSnapshot,
+  encodeProposalValidation,
+} from '../core/proposal-codec.js'
 
 const GOAL_COLUMNS = 'id, title, motivation, deadline, status, created_at AS createdAt, updated_at AS updatedAt'
 const PHASE_COLUMNS = 'id, goal_id AS goalId, title, seq, start_day AS startDay, end_day AS endDay, status, created_at AS createdAt, updated_at AS updatedAt'
@@ -26,9 +36,30 @@ const TASK_COLUMNS = `id, goal_id AS goalId, phase_id AS phaseId, title, day,
   est_minutes AS estMinutes, actual_minutes AS actualMinutes, priority, status, note,
   created_at AS createdAt, updated_at AS updatedAt`
 const DRAFT_COLUMNS = 'id, goal_id AS goalId, mode, payload_json AS payloadJson, verdict, status, decision_required AS decisionRequired, options_json AS optionsJson, created_at AS createdAt, expires_at AS expiresAt'
+const PROPOSAL_COLUMNS = `id, goal_id AS goalId, owner_session_id AS ownerSessionId,
+  operation, stage, status, revision, base_schedule_version AS baseScheduleVersion,
+  baseline_json AS baselineJson, candidate_json AS candidateJson, validation_json AS validationJson,
+  created_at AS createdAt, updated_at AS updatedAt, expires_at AS expiresAt`
 
 /** 草稿有效期 24 小时：跨轮可改，隔天作废。 */
 const DRAFT_TTL_MS = 24 * 60 * 60 * 1000
+
+export type PlannerStorageErrorCode =
+  | 'PROPOSAL_NOT_FOUND'
+  | 'PROPOSAL_OWNER_MISMATCH'
+  | 'PROPOSAL_REVISION_CONFLICT'
+  | 'PROPOSAL_TERMINAL'
+  | 'PROPOSAL_DATA_CORRUPT'
+
+export class PlannerStorageError extends Error {
+  readonly code: PlannerStorageErrorCode
+
+  constructor(code: PlannerStorageErrorCode, message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause })
+    this.name = 'PlannerStorageError'
+    this.code = code
+  }
+}
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -381,6 +412,133 @@ function setCapacity(db: DatabaseSync, rules: CapacityRules): void {
   writeSetting(db, CAPACITY_KEY, rules)
 }
 
+// ---------------------------------------------------------------- staged proposal
+
+function mapProposal(rowValue: unknown): PlanProposal {
+  const row = rowValue as Record<string, unknown>
+  const id = typeof row.id === 'string' ? row.id : ''
+  try {
+    const text = (key: string): string => {
+      const value = row[key]
+      if (typeof value !== 'string' || value === '') throw new TypeError(`${key} 非法`)
+      return value
+    }
+    const integer = (key: string): number => {
+      const value = row[key]
+      if (!Number.isSafeInteger(value)) throw new TypeError(`${key} 非法`)
+      return value as number
+    }
+    const operation = text('operation')
+    const stage = text('stage')
+    const status = text('status')
+    if (!['create', 'reschedule', 'modify', 'replan'].includes(operation)) throw new TypeError('operation 非法')
+    if (!['structure', 'estimate', 'schedule', 'ready'].includes(stage)) throw new TypeError('stage 非法')
+    if (!['editing', 'awaiting_confirmation', 'committed', 'discarded', 'stale'].includes(status)) throw new TypeError('status 非法')
+    const expiresAt = row.expiresAt
+    if (expiresAt !== null && typeof expiresAt !== 'string') throw new TypeError('expiresAt 非法')
+    return {
+      id: text('id'),
+      goalId: text('goalId'),
+      ownerSessionId: text('ownerSessionId'),
+      operation: operation as PlanProposal['operation'],
+      stage: stage as PlanProposal['stage'],
+      status: status as PlanProposal['status'],
+      revision: integer('revision'),
+      baseScheduleVersion: integer('baseScheduleVersion'),
+      baseline: decodePlanSnapshot(text('baselineJson'), id),
+      candidate: decodeProposalSnapshot(text('candidateJson'), id),
+      validation: decodeProposalValidation(text('validationJson'), id),
+      createdAt: text('createdAt'),
+      updatedAt: text('updatedAt'),
+      expiresAt,
+    }
+  } catch (cause) {
+    if (cause instanceof PlannerStorageError) throw cause
+    throw new PlannerStorageError('PROPOSAL_DATA_CORRUPT', `提案 ${id || '<unknown>'} 数据损坏`, cause)
+  }
+}
+
+function createProposal(db: DatabaseSync, proposal: PlanProposal): PlanProposal {
+  db.prepare(`insert into plan_proposal (
+    id, goal_id, owner_session_id, operation, stage, status, revision, base_schedule_version,
+    baseline_json, candidate_json, validation_json, created_at, updated_at, expires_at
+  ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    proposal.id,
+    proposal.goalId,
+    proposal.ownerSessionId,
+    proposal.operation,
+    proposal.stage,
+    proposal.status,
+    proposal.revision,
+    proposal.baseScheduleVersion,
+    encodePlanSnapshot(proposal.baseline),
+    encodeProposalSnapshot(proposal.candidate),
+    encodeProposalValidation(proposal.validation),
+    proposal.createdAt,
+    proposal.updatedAt,
+    proposal.expiresAt,
+  )
+  return getProposal(db, proposal.id)
+}
+
+function findProposal(db: DatabaseSync, id: string): PlanProposal | undefined {
+  const row = db.prepare(`select ${PROPOSAL_COLUMNS} from plan_proposal where id = ?`).get(id)
+  return row === undefined ? undefined : mapProposal(row)
+}
+
+function getProposal(db: DatabaseSync, id: string): PlanProposal {
+  const proposal = findProposal(db, id)
+  if (proposal === undefined) throw new PlannerStorageError('PROPOSAL_NOT_FOUND', `提案 ${id} 不存在`)
+  return proposal
+}
+
+function getProposalForOwner(db: DatabaseSync, id: string, ownerSessionId: string): PlanProposal {
+  const proposal = getProposal(db, id)
+  if (proposal.ownerSessionId !== ownerSessionId) {
+    throw new PlannerStorageError('PROPOSAL_OWNER_MISMATCH', `提案 ${id} 不属于当前会话`)
+  }
+  return proposal
+}
+
+function listProposalsByStatus(db: DatabaseSync, status: ProposalStatus, ownerSessionId?: string): PlanProposal[] {
+  const rows = ownerSessionId === undefined
+    ? db.prepare(`select ${PROPOSAL_COLUMNS} from plan_proposal where status = ? order by updated_at desc`).all(status)
+    : db.prepare(`select ${PROPOSAL_COLUMNS} from plan_proposal where status = ? and owner_session_id = ? order by updated_at desc`).all(status, ownerSessionId)
+  return rows.map(mapProposal)
+}
+
+function updateProposal(db: DatabaseSync, proposal: PlanProposal, expectedRevision: number): PlanProposal {
+  const result = db.prepare(`update plan_proposal set
+    stage = ?, status = ?, revision = ?, candidate_json = ?, validation_json = ?, updated_at = ?, expires_at = ?
+    where id = ? and revision = ? and status not in ('committed','discarded','stale')`).run(
+    proposal.stage,
+    proposal.status,
+    proposal.revision,
+    encodeProposalSnapshot(proposal.candidate),
+    encodeProposalValidation(proposal.validation),
+    proposal.updatedAt,
+    proposal.expiresAt,
+    proposal.id,
+    expectedRevision,
+  )
+  if (result.changes === 1) return getProposal(db, proposal.id)
+  const current = findProposal(db, proposal.id)
+  if (current === undefined) throw new PlannerStorageError('PROPOSAL_NOT_FOUND', `提案 ${proposal.id} 不存在`)
+  if (['committed', 'discarded', 'stale'].includes(current.status)) {
+    throw new PlannerStorageError('PROPOSAL_TERMINAL', `提案 ${proposal.id} 已进入终态`)
+  }
+  throw new PlannerStorageError('PROPOSAL_REVISION_CONFLICT', `提案 ${proposal.id} revision 已变化`)
+}
+
+function getScheduleVersion(db: DatabaseSync): number {
+  const row = db.prepare("select value from planner_meta where key = 'schedule_version'").get() as { value?: unknown } | undefined
+  const value = row?.value
+  if (typeof value !== 'string' || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) {
+    throw new PlannerStorageError('PROPOSAL_DATA_CORRUPT', 'schedule_version 数据损坏')
+  }
+  return Number(value)
+}
+
 /** 将运行时数据访问绑定到一个 SQLite 连接。 */
 export function createPlannerRepo(db: DatabaseSync) {
   return {
@@ -403,6 +561,12 @@ export function createPlannerRepo(db: DatabaseSync) {
     appendCheck: (entry: CheckEntry) => appendCheck(db, entry),
     getCapacity: () => getCapacity(db),
     setCapacity: (rules: CapacityRules) => setCapacity(db, rules),
+    createProposal: (proposal: PlanProposal) => createProposal(db, proposal),
+    getProposal: (id: string) => getProposal(db, id),
+    getProposalForOwner: (id: string, ownerSessionId: string) => getProposalForOwner(db, id, ownerSessionId),
+    listProposalsByStatus: (status: ProposalStatus, ownerSessionId?: string) => listProposalsByStatus(db, status, ownerSessionId),
+    updateProposal: (proposal: PlanProposal, expectedRevision: number) => updateProposal(db, proposal, expectedRevision),
+    getScheduleVersion: () => getScheduleVersion(db),
     transaction: <T>(fn: () => T) => transaction(db, fn),
   }
 }
