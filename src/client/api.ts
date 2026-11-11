@@ -61,6 +61,23 @@ export interface CapacityReport {
   days: Array<{ day: string; planned: number; limit: number }>
 }
 
+export interface PreviewTask {
+  key: string
+  sourceTaskId: string | null
+  title: string
+  day: string | null
+  estMinutes: number
+  priority: string
+}
+
+export interface ProposalPreview {
+  ok: true
+  proposal: { id: string; revision: number; goalId: string }
+  month: string
+  diff: { added: PreviewTask[]; removed: PreviewTask[]; unchanged: PreviewTask[]; summary: { added: number; removed: number; changed: number } }
+  days: Array<{ day: string; planned: number; limit: number }>
+}
+
 const BASE = '/personal-planner/api'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -91,5 +108,15 @@ export function putCapacity(capacity: Capacity): Promise<{ ok: true; capacity: C
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(capacity),
+  })
+}
+
+export function getProposalPreview(proposalId: string, token: string, revision: number, month: string): Promise<ProposalPreview> {
+  return request<ProposalPreview>(`/proposal/preview?proposal=${encodeURIComponent(proposalId)}&token=${encodeURIComponent(token)}&revision=${revision}&month=${encodeURIComponent(month)}`)
+}
+
+export function proposalAction(action: 'commit' | 'continue' | 'discard', proposalId: string, token: string, revision: number): Promise<{ ok: true }> {
+  return request<{ ok: true }>(`/proposal/${action}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ proposalId, token, revision }),
   })
 }
