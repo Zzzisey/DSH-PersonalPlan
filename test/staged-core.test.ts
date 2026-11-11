@@ -34,6 +34,7 @@ test('Proposal 合法推进到 ready，ready 不复制记录', () => {
   value = advanceProposalState(value, 'schedule', candidate, { schemaVersion: 1, state: 'evaluated', validatedRevision: 3, checkedStage: 'schedule', verdict: 'valid', issues: [], orderingConstraints: [], capacityDays: [], scheduleVersion: 0 }, value.updatedAt)
   assert.deepEqual({ id: value.id, stage: value.stage, status: value.status, revision: value.revision }, { id: 'x', stage: 'ready', status: 'awaiting_confirmation', revision: 3 })
   assert.equal(reopenProposal(value, value.updatedAt).candidate.phases[0]!.tasks[0]!.estMinutes, null)
+  assert.equal(reopenProposal({ ...value, operation: 'reschedule' }, value.updatedAt).stage, 'schedule')
   assert.equal(discardProposalState(proposal(), 'now').status, 'discarded')
 })
 

@@ -34,6 +34,7 @@ export function registerStagedPlannerPrompt(ctx: Context): void {
     order: PROMPT_ORDER,
     text: '个人计划 staged 流程：正式层级只有 Goal → Phase → Task，PlanProposal 不是正式层级。先创建带验收标准的 Goal，再用 planner_plan_create 开始同一份 Proposal。'
       + '严格按 structure（标题/验收标准/优先级）→ estimate（15–120 分钟且为 15 的倍数）→ schedule（日期与依赖）推进；每阶段最多语义修订 2 次。'
+      + '场景必须准确选择：新建计划用 create；只改日期用 reschedule；局部结构或估时变化用 modify；整体替换未完成计划用 replan，并原样保留 completed 内容。'
       + 'ready 前绝不能声称 Phase/Task 已正式创建；ready 后让用户打开最终日历预览，只有明确确认后才能提交。不要在工具外启动另一套规划 LLM。',
   }), 'planner: staged prompt')
 }

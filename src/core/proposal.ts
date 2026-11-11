@@ -25,16 +25,17 @@ export function advanceProposalState(
 
 export function reopenProposal(proposal: PlanProposal, updatedAt: string): PlanProposal {
   if (proposal.stage !== 'ready' || proposal.status !== 'awaiting_confirmation') throw new Error('PROPOSAL_NOT_READY')
+  const stage = proposal.operation === 'reschedule' ? 'schedule' : 'structure'
   return {
     ...proposal,
-    stage: 'structure',
+    stage,
     status: 'editing',
     revision: proposal.revision + 1,
-    candidate: {
+    candidate: stage === 'schedule' ? proposal.candidate : {
       ...proposal.candidate,
       phases: proposal.candidate.phases.map((phase) => ({
         ...phase,
-        tasks: phase.tasks.map((task) => ({ ...task, estMinutes: null, day: null })),
+        tasks: phase.tasks.map((task) => task.completion.isCompleted ? task : { ...task, estMinutes: null, day: null }),
       })),
     },
     validation: { schemaVersion: 1, state: 'pending' },

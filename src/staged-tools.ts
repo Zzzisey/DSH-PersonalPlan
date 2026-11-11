@@ -24,13 +24,27 @@ function ref(proposal: { id: string; goalId: string; operation: string; stage: s
 function contextFor(proposal: ReturnType<PlannerService['getProposal']>): Record<string, JsonValue> {
   const tasks = proposal.candidate.phases.flatMap((phase) => phase.tasks.map((task) => ({
     phaseLocalId: phase.localId,
+    sourceTaskId: task.sourceTaskId,
     taskLocalId: task.localId,
     title: task.title,
     priority: task.priority,
+    seq: task.seq,
+    completed: task.completion.isCompleted,
     estMinutes: task.estMinutes,
     day: task.day,
   })))
-  return { proposal: ref(proposal), phases: proposal.candidate.phases.map((phase) => ({ localId: phase.localId, title: phase.title })), tasks }
+  return {
+    proposal: ref(proposal),
+    phases: proposal.candidate.phases.map((phase) => ({
+      localId: phase.localId,
+      sourcePhaseId: phase.sourcePhaseId,
+      title: phase.title,
+      acceptanceCriteria: phase.acceptanceCriteria,
+      seq: phase.seq,
+      completed: phase.completion.isCompleted,
+    })),
+    tasks,
+  }
 }
 
 function issueValues(issues: readonly { code: string; message: string; phaseLocalId?: string; taskLocalId?: string; day?: string }[]): JsonValue[] {
