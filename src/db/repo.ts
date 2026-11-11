@@ -20,6 +20,7 @@ import type {
   Verdict,
   PlanProposal,
   ProposalStatus,
+  PlanSnapshotV1,
 } from '../core/types.js'
 import {
   decodePlanSnapshot,
@@ -92,19 +93,21 @@ export interface CreateGoalInput {
   title: string
   motivation?: string
   deadline?: string
+  acceptanceCriteria?: string
 }
 
 function createGoal(db: DatabaseSync, input: CreateGoalInput): Goal {
   const stamp = nowIso()
   const id = newId('g')
-  db.prepare(`insert into goal (id, title, motivation, deadline, status, created_at, updated_at)
-    values (?,?,?,?,'active',?,?)`).run(
+  db.prepare(`insert into goal (id, title, motivation, deadline, status, created_at, updated_at, acceptance_criteria)
+    values (?,?,?,?,'active',?,?,?)`).run(
     id,
     input.title.trim(),
     input.motivation ?? null,
     input.deadline ?? null,
     stamp,
     stamp,
+    input.acceptanceCriteria ?? null,
   )
   return getGoal(db, id)!
 }
@@ -162,6 +165,7 @@ export interface CreatePhaseInput {
   seq: number
   startDay?: string
   endDay?: string
+  acceptanceCriteria?: string
 }
 
 export interface CreateTaskInput {
@@ -178,8 +182,8 @@ export interface CreateTaskInput {
 function createPhase(db: DatabaseSync, input: CreatePhaseInput): Phase {
   const stamp = nowIso()
   const id = newId('p')
-  db.prepare(`insert into phase (id, goal_id, title, seq, start_day, end_day, status, created_at, updated_at)
-    values (?,?,?,?,?,?,'planned',?,?)`).run(
+  db.prepare(`insert into phase (id, goal_id, title, seq, start_day, end_day, status, created_at, updated_at, acceptance_criteria)
+    values (?,?,?,?,?,?,'planned',?,?,?)`).run(
     id,
     input.goalId,
     input.title,
@@ -188,6 +192,7 @@ function createPhase(db: DatabaseSync, input: CreatePhaseInput): Phase {
     input.endDay ?? null,
     stamp,
     stamp,
+    input.acceptanceCriteria ?? null,
   )
   return db.prepare(`select ${PHASE_COLUMNS} from phase where id = ?`).get(id) as unknown as Phase
 }
@@ -552,6 +557,47 @@ function incrementScheduleVersion(db: DatabaseSync): void {
   if (result.changes !== 1) throw new PlannerStorageError('PROPOSAL_DATA_CORRUPT', 'schedule_version 更新失败')
 }
 
+function getPlanSnapshot(db: DatabaseSync, goalId: string): PlanSnapshotV1 | undefined {
+  const goal = db.prepare(`select id,title,acceptance_criteria as acceptanceCriteria,deadline,status
+    from goal where id = ?`).get(goalId) as PlanSnapshotV1['goal'] | undefined
+  if (goal === undefined) return undefined
+  const phases = db.prepare(`select id,title,acceptance_criteria as acceptanceCriteria,seq,status,completed_at as completedAt
+    from phase where goal_id = ? and status <> 'dropped' order by seq,id`).all(goalId) as Array<{
+      id: string; title: string; acceptanceCriteria: string | null; seq: number; status: string; completedAt: string | null
+    }>
+  return {
+    schemaVersion: 1,
+    goal,
+    phases: phases.map((phase) => ({
+      id: phase.id,
+      title: phase.title,
+      acceptanceCriteria: phase.acceptanceCriteria,
+      seq: phase.seq,
+      completion: phase.status === 'done'
+        ? { isCompleted: true, completedAt: phase.completedAt }
+        : { isCompleted: false, completedAt: null },
+      tasks: (db.prepare(`select id,title,priority,est_minutes as estMinutes,day,seq,status,
+          completed_at as completedAt,actual_minutes as actualMinutes,note
+        from task where phase_id = ? and status <> 'dropped' order by seq,id`).all(phase.id) as Array<{
+          id: string; title: string; priority: Priority; estMinutes: number; day: string | null; seq: number
+          status: string; completedAt: string | null; actualMinutes: number | null; note: string | null
+        }>).map((task) => ({
+          id: task.id,
+          title: task.title,
+          priority: task.priority,
+          estMinutes: task.estMinutes,
+          day: task.day,
+          seq: task.seq,
+          completion: task.status === 'done'
+            ? { isCompleted: true, completedAt: task.completedAt }
+            : { isCompleted: false, completedAt: null },
+          actualMinutes: task.actualMinutes,
+          note: task.note,
+        })),
+    })),
+  }
+}
+
 /** 将运行时数据访问绑定到一个 SQLite 连接。 */
 export function createPlannerRepo(db: DatabaseSync) {
   let transactionDepth = 0
@@ -622,6 +668,7 @@ export function createPlannerRepo(db: DatabaseSync) {
     listProposalsByStatus: (status: ProposalStatus, ownerSessionId?: string) => listProposalsByStatus(db, status, ownerSessionId),
     updateProposal: (proposal: PlanProposal, expectedRevision: number) => updateProposal(db, proposal, expectedRevision),
     getScheduleVersion: () => getScheduleVersion(db),
+    getPlanSnapshot: (goalId: string) => getPlanSnapshot(db, goalId),
     transaction: <T>(fn: () => T) => runTransaction(fn),
   }
 }

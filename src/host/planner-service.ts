@@ -1,3 +1,4 @@
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import type {
   CapacityRules,
   DayLoad,
@@ -7,7 +8,15 @@ import type {
   Priority,
   Task,
   Verdict,
+  EstimateProposalCommand,
+  PlanProposal,
+  ProposalSnapshotV1,
+  ProposalValidationIssue,
+  ScheduleProposalCommand,
+  StructureProposalCommand,
 } from '../core/types.js'
+import { PROPOSAL_TTL_MS } from '../core/policy.js'
+import { advanceProposalState, discardProposalState, reopenProposal } from '../core/proposal.js'
 import {
   addDays,
   capacityBetween,
@@ -20,6 +29,7 @@ import {
   type PlanEntry,
   type PlanVerdict,
 } from '../core/validation/capacity.js'
+import { validateEstimate, validateSchedule, validateStructure } from '../core/validation/staged.js'
 import { runJudge, type JudgeChat, type JudgeVerdict } from '../judge.js'
 import { runReschedule, type Move, type RescheduleChat } from '../reschedule.js'
 import type {
@@ -81,6 +91,11 @@ export interface OverviewView {
   days: DayLoad[]
   risks: Array<{ goalId: string; title: string; remaining: number; usable: number }>
 }
+
+export type AdvanceProposalResult =
+  | { status: 'accepted'; proposal: PlanProposal; nextStage: 'estimate' | 'schedule' }
+  | { status: 'revise_required'; proposal: PlanProposal; issues: ProposalValidationIssue[] }
+  | { status: 'ready_for_preview'; proposal: PlanProposal; previewToken: string }
 
 const JUDGE_TO_PLAN: Record<JudgeVerdict, PlanVerdict> = {
   pass: 'ok',
@@ -153,6 +168,7 @@ function bad(message: string): string {
 export class PlannerService {
   private readonly repo: PlannerRepo
   private readonly options: PlannerServiceOptions
+  private readonly previewSecret = randomBytes(32)
 
   constructor(repo: PlannerRepo, options: PlannerServiceOptions = {}) {
     this.repo = repo
@@ -162,6 +178,172 @@ export class PlannerService {
   createGoal(input: CreateGoalInput): Goal { return this.repo.createGoal(input) }
   getGoal(id: string): Goal | undefined { return this.repo.getGoal(id) }
   updateGoal(id: string, patch: GoalPatch): Goal | undefined { return this.repo.updateGoal(id, patch) }
+
+  private assertProposalLive(proposal: PlanProposal): void {
+    if (proposal.expiresAt !== null && Date.parse(proposal.expiresAt) < Date.now()) throw new Error('PROPOSAL_EXPIRED')
+  }
+
+  private proposalForOwner(id: string, ownerSessionId: string, expectedRevision?: number): PlanProposal {
+    const proposal = this.repo.getProposalForOwner(id, ownerSessionId)
+    this.assertProposalLive(proposal)
+    if (expectedRevision !== undefined && proposal.revision !== expectedRevision) throw new Error('PROPOSAL_REVISION_CONFLICT')
+    return proposal
+  }
+
+  startCreateProposal(ownerSessionId: string, goalId: string): PlanProposal {
+    const baseline = this.repo.getPlanSnapshot(goalId)
+    if (baseline === undefined) throw new Error('GOAL_NOT_FOUND')
+    if (baseline.goal.acceptanceCriteria === null) throw new Error('GOAL_ACCEPTANCE_REQUIRED')
+    if (baseline.goal.status !== 'active') throw new Error('GOAL_NOT_ACTIVE')
+    if (baseline.phases.length > 0) throw new Error('GOAL_ALREADY_PLANNED')
+    const now = new Date()
+    return this.repo.createProposal({
+      id: `proposal_${randomUUID()}`,
+      goalId,
+      ownerSessionId,
+      operation: 'create',
+      stage: 'structure',
+      status: 'editing',
+      revision: 0,
+      baseScheduleVersion: this.repo.getScheduleVersion(),
+      baseline,
+      candidate: { schemaVersion: 1, phases: [] },
+      validation: { schemaVersion: 1, state: 'pending' },
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + PROPOSAL_TTL_MS).toISOString(),
+    })
+  }
+
+  getProposal(ownerSessionId: string, proposalId: string): PlanProposal {
+    return this.proposalForOwner(proposalId, ownerSessionId)
+  }
+
+  advanceStructure(ownerSessionId: string, proposalId: string, expectedRevision: number, command: StructureProposalCommand): AdvanceProposalResult {
+    const proposal = this.proposalForOwner(proposalId, ownerSessionId, expectedRevision)
+    const issues = validateStructure(command)
+    if (issues.length > 0) return { status: 'revise_required', proposal, issues }
+    const candidate: ProposalSnapshotV1 = {
+      schemaVersion: 1,
+      phases: command.phases.map((phase) => ({
+        localId: `phase_${randomUUID()}`,
+        sourcePhaseId: null,
+        title: phase.title.trim(),
+        acceptanceCriteria: phase.acceptanceCriteria.trim(),
+        seq: phase.seq,
+        completion: { isCompleted: false, completedAt: null },
+        tasks: phase.tasks.map((task) => ({
+          localId: `task_${randomUUID()}`,
+          sourceTaskId: null,
+          title: task.title.trim(),
+          priority: task.priority,
+          seq: task.seq,
+          completion: { isCompleted: false, completedAt: null },
+          estMinutes: null,
+          day: null,
+          actualMinutes: null,
+          note: null,
+        })),
+      })),
+    }
+    const revision = proposal.revision + 1
+    const next = advanceProposalState(proposal, 'structure', candidate, {
+      schemaVersion: 1, state: 'evaluated', validatedRevision: revision, checkedStage: 'structure', verdict: 'valid', issues: [],
+    }, new Date().toISOString())
+    return { status: 'accepted', proposal: this.repo.updateProposal(next, expectedRevision), nextStage: 'estimate' }
+  }
+
+  advanceEstimate(ownerSessionId: string, proposalId: string, expectedRevision: number, command: EstimateProposalCommand): AdvanceProposalResult {
+    const proposal = this.proposalForOwner(proposalId, ownerSessionId, expectedRevision)
+    const issues = validateEstimate(proposal.candidate, command)
+    if (issues.length > 0) return { status: 'revise_required', proposal, issues }
+    const estimates = new Map(command.tasks.map((task) => [task.taskLocalId, task.estMinutes]))
+    const candidate = {
+      ...proposal.candidate,
+      phases: proposal.candidate.phases.map((phase) => ({
+        ...phase,
+        tasks: phase.tasks.map((task) => ({ ...task, estMinutes: estimates.get(task.localId)! })),
+      })),
+    }
+    const revision = proposal.revision + 1
+    const next = advanceProposalState(proposal, 'estimate', candidate, {
+      schemaVersion: 1, state: 'evaluated', validatedRevision: revision, checkedStage: 'estimate', verdict: 'valid', issues: [],
+    }, new Date().toISOString())
+    return { status: 'accepted', proposal: this.repo.updateProposal(next, expectedRevision), nextStage: 'schedule' }
+  }
+
+  private scheduleContext(proposal: PlanProposal, command: ScheduleProposalCommand) {
+    const days = command.tasks.map((task) => task.day).sort()
+    const external = new Map<string, number>()
+    if (days.length > 0) for (const task of this.repo.listTasks({ from: days[0]!, to: days[days.length - 1]!, limit: 200 })) {
+      if (task.goalId === proposal.goalId || task.day === null || task.status === 'done' || task.status === 'dropped') continue
+      external.set(task.day, (external.get(task.day) ?? 0) + task.estMinutes)
+    }
+    const capacity = this.repo.getCapacity()
+    return { external, capacity }
+  }
+
+  advanceSchedule(ownerSessionId: string, proposalId: string, expectedRevision: number, command: ScheduleProposalCommand): AdvanceProposalResult {
+    const proposal = this.proposalForOwner(proposalId, ownerSessionId, expectedRevision)
+    const { external, capacity } = this.scheduleContext(proposal, command)
+    const issues = validateSchedule(proposal.candidate, command, {
+      deadline: proposal.baseline.goal.deadline,
+      externalMinutes: external,
+      capacityFor: (day) => limitFor(day, capacity),
+    })
+    if (issues.length > 0) return { status: 'revise_required', proposal, issues }
+    const dates = new Map(command.tasks.map((task) => [task.taskLocalId, task.day]))
+    const candidate = {
+      ...proposal.candidate,
+      phases: proposal.candidate.phases.map((phase) => ({
+        ...phase,
+        tasks: phase.tasks.map((task) => ({ ...task, day: dates.get(task.localId)! })),
+      })),
+    }
+    const revision = proposal.revision + 1
+    const capacityDays = [...new Set(command.tasks.map((task) => task.day))].sort().map((day) => ({
+      day,
+      limitMinutes: limitFor(day, capacity),
+      externalPlannedMinutes: external.get(day) ?? 0,
+      candidatePlannedMinutes: candidate.phases.flatMap((phase) => phase.tasks)
+        .filter((task) => task.day === day).reduce((sum, task) => sum + (task.estMinutes ?? 0), 0),
+    }))
+    const next = advanceProposalState(proposal, 'schedule', candidate, {
+      schemaVersion: 1, state: 'evaluated', validatedRevision: revision, checkedStage: 'schedule', verdict: 'valid', issues: [],
+      orderingConstraints: command.orderingConstraints, capacityDays, scheduleVersion: this.repo.getScheduleVersion(),
+    }, new Date().toISOString())
+    const saved = this.repo.updateProposal(next, expectedRevision)
+    return { status: 'ready_for_preview', proposal: saved, previewToken: this.issuePreviewToken(saved) }
+  }
+
+  discardProposal(ownerSessionId: string, proposalId: string, expectedRevision: number): PlanProposal {
+    const proposal = this.proposalForOwner(proposalId, ownerSessionId, expectedRevision)
+    return this.repo.updateProposal(discardProposalState(proposal, new Date().toISOString()), expectedRevision)
+  }
+
+  continueProposal(ownerSessionId: string, proposalId: string, expectedRevision: number): PlanProposal {
+    const proposal = this.proposalForOwner(proposalId, ownerSessionId, expectedRevision)
+    return this.repo.updateProposal(reopenProposal(proposal, new Date().toISOString()), expectedRevision)
+  }
+
+  issuePreviewToken(proposal: PlanProposal): string {
+    const payload = Buffer.from(JSON.stringify({ proposalId: proposal.id, ownerSessionId: proposal.ownerSessionId, exp: Date.now() + 60 * 60 * 1000 })).toString('base64url')
+    const signature = createHmac('sha256', this.previewSecret).update(payload).digest('base64url')
+    return `${payload}.${signature}`
+  }
+
+  ownerFromPreviewToken(token: string, proposalId: string): string {
+    const [payload, signature] = token.split('.')
+    if (payload === undefined || signature === undefined) throw new Error('PROPOSAL_TOKEN_INVALID')
+    const expected = createHmac('sha256', this.previewSecret).update(payload).digest()
+    const actual = Buffer.from(signature, 'base64url')
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new Error('PROPOSAL_TOKEN_INVALID')
+    const value = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { proposalId?: unknown; ownerSessionId?: unknown; exp?: unknown }
+    if (value.proposalId !== proposalId || typeof value.ownerSessionId !== 'string' || typeof value.exp !== 'number' || value.exp < Date.now()) {
+      throw new Error('PROPOSAL_TOKEN_INVALID')
+    }
+    return value.ownerSessionId
+  }
 
   queryTasks(filter: TaskFilter = {}): Task[] { return this.repo.listTasks(filter) }
 
