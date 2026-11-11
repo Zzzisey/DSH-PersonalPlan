@@ -101,6 +101,22 @@ export function createStagedPlannerTools(service: PlannerService) {
     },
   })
 
+  const planModify = defineTool({
+    name: 'planner_plan_modify',
+    description: '局部修改已有计划。改估时从 estimate 开始；改标题、优先级、任务或阶段边界从 structure 开始。纯日期变化必须使用 planner_plan_reschedule。',
+    parameters: { goal_id: { type: 'string', required: true }, affected_stage: { type: 'string', required: true, enum: ['structure', 'estimate'] } },
+    output,
+    async execute(args: Record<string, unknown>, exec: ToolRunContext) {
+      const session = owner(exec)
+      if (session === undefined) return { status: 'error', code: 'SESSION_REQUIRED' }
+      if (typeof args.goal_id !== 'string' || (args.affected_stage !== 'structure' && args.affected_stage !== 'estimate')) return { status: 'error', code: 'ARGUMENT_INVALID' }
+      try {
+        const proposal = service.startModifyProposal(session, args.goal_id, args.affected_stage)
+        return { status: 'started', ...contextFor(proposal), next: `从 ${args.affected_stage} 阶段提交完整候选` }
+      } catch (cause) { return error(cause) }
+    },
+  })
+
   const advance = defineTool({
     name: 'planner_proposal_advance',
     description: '提交 Proposal 当前阶段产物。structure 只含结构；estimate 只含 task_local_id/est_minutes；schedule 只含日期和 ordering constraints。',
@@ -191,5 +207,5 @@ export function createStagedPlannerTools(service: PlannerService) {
     },
   })
 
-  return [goalCreate, planCreate, planReschedule, advance, get, discard]
+  return [goalCreate, planCreate, planReschedule, planModify, advance, get, discard]
 }
