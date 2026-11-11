@@ -89,6 +89,8 @@ test('正式计划和容量变化增加一次 schedule_version，事务回滚不
   repo.transaction(() => {
     const phase = repo.createPhase({ goalId: goal.id, title: '阶段', seq: 1 })
     taskId = repo.createTask({ goalId: goal.id, phaseId: phase.id, title: '任务' }).id
+    const second = repo.createTask({ goalId: goal.id, phaseId: phase.id, title: '任务 2' })
+    assert.equal((db.prepare('select seq from task where id = ?').get(second.id) as { seq: number }).seq, 2)
   })
   assert.equal(repo.getScheduleVersion(), 3, '一个正式计划事务只增加一次')
 

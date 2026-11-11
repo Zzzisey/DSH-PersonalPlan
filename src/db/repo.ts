@@ -172,6 +172,7 @@ export interface CreateTaskInput {
   estMinutes?: number
   priority?: Priority
   note?: string
+  seq?: number
 }
 
 function createPhase(db: DatabaseSync, input: CreatePhaseInput): Phase {
@@ -198,8 +199,10 @@ function listPhases(db: DatabaseSync, goalId: string): Phase[] {
 function createTask(db: DatabaseSync, input: CreateTaskInput): Task {
   const stamp = nowIso()
   const id = newId('t')
-  db.prepare(`insert into task (id, goal_id, phase_id, title, day, est_minutes, priority, status, note, created_at, updated_at)
-    values (?,?,?,?,?,?,?,'todo',?,?,?)`).run(
+  const nextSeq = input.seq ?? (db.prepare('select coalesce(max(seq), 0) + 1 as value from task where phase_id is ?')
+    .get(input.phaseId ?? null) as { value: number }).value
+  db.prepare(`insert into task (id, goal_id, phase_id, title, day, est_minutes, priority, status, note, created_at, updated_at, seq)
+    values (?,?,?,?,?,?,?,'todo',?,?,?,?)`).run(
     id,
     input.goalId ?? null,
     input.phaseId ?? null,
@@ -210,6 +213,7 @@ function createTask(db: DatabaseSync, input: CreateTaskInput): Task {
     input.note ?? null,
     stamp,
     stamp,
+    nextSeq,
   )
   return getTask(db, id)!
 }
