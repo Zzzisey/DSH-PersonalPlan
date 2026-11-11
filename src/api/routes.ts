@@ -55,6 +55,34 @@ function dayOf(url: URL): string | undefined {
   return raw !== null && DATE_RE.test(raw) ? raw : undefined
 }
 
+function proposalQuery(url: URL): { proposalId: string; token: string; revision: number } | undefined {
+  const proposalId = url.searchParams.get('proposal')
+  const token = url.searchParams.get('token')
+  const revision = Number(url.searchParams.get('revision'))
+  return proposalId === null || proposalId === '' || token === null || token === '' || !Number.isInteger(revision) || revision < 0
+    ? undefined
+    : { proposalId, token, revision }
+}
+
+async function proposalAction(service: PlannerService, action: 'commit' | 'continue' | 'discard', req: Parameters<WebRoute['handler']>[0], res: Parameters<WebRoute['handler']>[1]): Promise<void> {
+  const body = await readJsonBody(req)
+  const proposalId = body?.proposalId
+  const token = body?.token
+  const revision = body?.revision
+  if (typeof proposalId !== 'string' || typeof token !== 'string' || !Number.isInteger(revision)) {
+    writeJson(res, 400, { ok: false, error: 'proposalId、token、revision 必填' })
+    return
+  }
+  try {
+    const owner = service.ownerFromPreviewToken(token, proposalId)
+    if (action === 'commit') writeJson(res, 200, { ok: true, result: service.commitProposal(token, proposalId, revision as number) })
+    else if (action === 'continue') writeJson(res, 200, { ok: true, proposal: service.continueProposal(owner, proposalId, revision as number) })
+    else writeJson(res, 200, { ok: true, proposal: service.discardProposal(owner, proposalId, revision as number) })
+  } catch (error) {
+    writeJson(res, 409, { ok: false, error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
 /** 月网格 + 目标进度 + 当前容量。 */
 function monthPayload(service: PlannerService, month: string): unknown {
   const view = service.queryCalendarMonth(month)
@@ -173,6 +201,27 @@ export function createPlannerRoutes(service: PlannerService): WebRoute[] {
             return
           }
           writeJson(res, 200, dayPayload(service, day))
+          return
+        }
+        if (req.method === 'GET' && path === `${ROUTE}/api/proposal/preview`) {
+          const query = proposalQuery(url)
+          if (query === undefined) {
+            writeJson(res, 400, { ok: false, error: 'proposal、token、revision 必填' })
+            return
+          }
+          writeJson(res, 200, { ok: true, ...service.queryProposalPreview(query.token, query.proposalId, query.revision, monthOf(url)) })
+          return
+        }
+        if (req.method === 'POST' && path === `${ROUTE}/api/proposal/commit`) {
+          await proposalAction(service, 'commit', req, res)
+          return
+        }
+        if (req.method === 'POST' && path === `${ROUTE}/api/proposal/continue`) {
+          await proposalAction(service, 'continue', req, res)
+          return
+        }
+        if (req.method === 'POST' && path === `${ROUTE}/api/proposal/discard`) {
+          await proposalAction(service, 'discard', req, res)
           return
         }
         if (req.method === 'PATCH' && path === `${ROUTE}/api/tasks`) {
