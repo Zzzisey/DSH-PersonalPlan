@@ -85,6 +85,22 @@ export function createStagedPlannerTools(service: PlannerService) {
     },
   })
 
+  const planReschedule = defineTool({
+    name: 'planner_plan_reschedule',
+    description: '已有计划结构和估时正确、只需调整未完成任务日期时使用。不得借此修改标题、优先级、估时或任务边界。',
+    parameters: { goal_id: { type: 'string', required: true } },
+    output,
+    async execute(args: Record<string, unknown>, exec: ToolRunContext) {
+      const session = owner(exec)
+      if (session === undefined) return { status: 'error', code: 'SESSION_REQUIRED' }
+      if (typeof args.goal_id !== 'string') return { status: 'error', code: 'GOAL_ID_REQUIRED' }
+      try {
+        const proposal = service.startRescheduleProposal(session, args.goal_id)
+        return { status: 'started', ...contextFor(proposal), next: '只提交全部任务日期和重新检查后的 ordering constraints' }
+      } catch (cause) { return error(cause) }
+    },
+  })
+
   const advance = defineTool({
     name: 'planner_proposal_advance',
     description: '提交 Proposal 当前阶段产物。structure 只含结构；estimate 只含 task_local_id/est_minutes；schedule 只含日期和 ordering constraints。',
@@ -175,5 +191,5 @@ export function createStagedPlannerTools(service: PlannerService) {
     },
   })
 
-  return [goalCreate, planCreate, advance, get, discard]
+  return [goalCreate, planCreate, planReschedule, advance, get, discard]
 }

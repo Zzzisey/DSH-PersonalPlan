@@ -60,6 +60,7 @@ test('staged 与 legacy tools 由配置互斥暴露', () => {
     assert.deepEqual(staged, [
       'planner_goal_create',
       'planner_plan_create',
+      'planner_plan_reschedule',
       'planner_proposal_advance',
       'planner_proposal_get',
       'planner_proposal_discard',
