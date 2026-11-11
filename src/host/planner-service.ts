@@ -198,29 +198,67 @@ export class PlannerService {
     return proposal
   }
 
-  startCreateProposal(ownerSessionId: string, goalId: string): PlanProposal {
+  private candidateFromBaseline(baseline: PlanProposal['baseline']): ProposalSnapshotV1 {
+    return {
+      schemaVersion: 1,
+      phases: baseline.phases.map((phase) => {
+        if (phase.acceptanceCriteria === null) throw new Error('PHASE_ACCEPTANCE_REQUIRED')
+        return {
+          localId: `phase_${phase.id}`,
+          sourcePhaseId: phase.id,
+          title: phase.title,
+          acceptanceCriteria: phase.acceptanceCriteria,
+          seq: phase.seq,
+          completion: phase.completion,
+          tasks: phase.tasks.map((task) => ({
+            localId: `task_${task.id}`,
+            sourceTaskId: task.id,
+            title: task.title,
+            priority: task.priority,
+            seq: task.seq,
+            completion: task.completion,
+            estMinutes: task.estMinutes,
+            day: task.day,
+            actualMinutes: task.actualMinutes,
+            note: task.note,
+          })),
+        }
+      }),
+    }
+  }
+
+  private startProposal(ownerSessionId: string, goalId: string, operation: PlanProposal['operation'], stage: PlanProposal['stage']): PlanProposal {
     const baseline = this.repo.getPlanSnapshot(goalId)
     if (baseline === undefined) throw new Error('GOAL_NOT_FOUND')
     if (baseline.goal.acceptanceCriteria === null) throw new Error('GOAL_ACCEPTANCE_REQUIRED')
     if (baseline.goal.status !== 'active') throw new Error('GOAL_NOT_ACTIVE')
-    if (baseline.phases.length > 0) throw new Error('GOAL_ALREADY_PLANNED')
+    if (operation === 'create' && baseline.phases.length > 0) throw new Error('GOAL_ALREADY_PLANNED')
+    if (operation !== 'create' && baseline.phases.length === 0) throw new Error('GOAL_NOT_PLANNED')
     const now = new Date()
     return this.repo.createProposal({
       id: `proposal_${randomUUID()}`,
       goalId,
       ownerSessionId,
-      operation: 'create',
-      stage: 'structure',
+      operation,
+      stage,
       status: 'editing',
       revision: 0,
       baseScheduleVersion: this.repo.getScheduleVersion(),
       baseline,
-      candidate: { schemaVersion: 1, phases: [] },
+      candidate: operation === 'create' ? { schemaVersion: 1, phases: [] } : this.candidateFromBaseline(baseline),
       validation: { schemaVersion: 1, state: 'pending' },
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + PROPOSAL_TTL_MS).toISOString(),
     })
+  }
+
+  startCreateProposal(ownerSessionId: string, goalId: string): PlanProposal {
+    return this.startProposal(ownerSessionId, goalId, 'create', 'structure')
+  }
+
+  startRescheduleProposal(ownerSessionId: string, goalId: string): PlanProposal {
+    return this.startProposal(ownerSessionId, goalId, 'reschedule', 'schedule')
   }
 
   getProposal(ownerSessionId: string, proposalId: string): PlanProposal {
@@ -293,6 +331,12 @@ export class PlannerService {
 
   advanceSchedule(ownerSessionId: string, proposalId: string, expectedRevision: number, command: ScheduleProposalCommand): AdvanceProposalResult {
     const proposal = this.proposalForOwner(proposalId, ownerSessionId, expectedRevision)
+    if (proposal.operation === 'reschedule') {
+      const days = new Map(command.tasks.map((task) => [task.taskLocalId, task.day]))
+      const completedChanged = proposal.candidate.phases.flatMap((phase) => phase.tasks)
+        .some((task) => task.completion.isCompleted && days.get(task.localId) !== task.day)
+      if (completedChanged) throw new Error('COMPLETED_TASK_IMMUTABLE')
+    }
     const { external, capacity } = this.scheduleContext(proposal, command)
     const issues = validateSchedule(proposal.candidate, command, {
       deadline: proposal.baseline.goal.deadline,
@@ -387,10 +431,9 @@ export class PlannerService {
       const proposal = this.proposalForOwner(proposalId, owner, expectedRevision)
       if (proposal.stage !== 'ready' || proposal.status !== 'awaiting_confirmation') throw new Error('PROPOSAL_NOT_READY')
       const latest = this.repo.getPlanSnapshot(proposal.goalId)
-      const goalChanged = latest === undefined || JSON.stringify(latest.goal) !== JSON.stringify(proposal.baseline.goal)
-      const alreadyPlanned = latest !== undefined && latest.phases.length > 0
+      const baselineChanged = latest === undefined || JSON.stringify(latest) !== JSON.stringify(proposal.baseline)
       const validation = proposal.validation
-      if (goalChanged || alreadyPlanned || validation.state !== 'evaluated' || validation.checkedStage !== 'schedule') {
+      if (baselineChanged || validation.state !== 'evaluated' || validation.checkedStage !== 'schedule') {
         const stale = { ...proposal, status: 'stale' as const, revision: proposal.revision + 1, updatedAt: new Date().toISOString() }
         this.repo.updateProposal(stale, expectedRevision)
         return { stale: true as const }
@@ -410,16 +453,24 @@ export class PlannerService {
         return { stale: true as const }
       }
       let tasks = 0
-      for (const phase of proposal.candidate.phases) {
-        const created = this.repo.createPhase({ goalId: proposal.goalId, title: phase.title, acceptanceCriteria: phase.acceptanceCriteria, seq: phase.seq })
-        for (const task of phase.tasks) {
-          if (task.estMinutes === null || task.day === null) throw new Error('PROPOSAL_NOT_READY')
-          this.repo.createTask({ goalId: proposal.goalId, phaseId: created.id, title: task.title, priority: task.priority, estMinutes: task.estMinutes, day: task.day, seq: task.seq })
-          tasks += 1
+      if (proposal.operation === 'reschedule') {
+        const patches = proposal.candidate.phases.flatMap((phase) => phase.tasks)
+          .filter((task) => !task.completion.isCompleted)
+          .map((task) => ({ id: task.sourceTaskId!, day: task.day }))
+        this.repo.updateTasks(patches)
+        tasks = patches.length
+      } else {
+        for (const phase of proposal.candidate.phases) {
+          const created = this.repo.createPhase({ goalId: proposal.goalId, title: phase.title, acceptanceCriteria: phase.acceptanceCriteria, seq: phase.seq })
+          for (const task of phase.tasks) {
+            if (task.estMinutes === null || task.day === null) throw new Error('PROPOSAL_NOT_READY')
+            this.repo.createTask({ goalId: proposal.goalId, phaseId: created.id, title: task.title, priority: task.priority, estMinutes: task.estMinutes, day: task.day, seq: task.seq })
+            tasks += 1
+          }
         }
       }
       this.repo.updateProposal({ ...proposal, status: 'committed', revision: proposal.revision + 1, updatedAt: new Date().toISOString() }, expectedRevision)
-      return { stale: false as const, phases: proposal.candidate.phases.length, tasks }
+      return { stale: false as const, phases: proposal.operation === 'reschedule' ? 0 : proposal.candidate.phases.length, tasks }
     })
     if (result.stale) throw new Error('PROPOSAL_STALE')
     return { phases: result.phases, tasks: result.tasks, scheduleVersion: this.repo.getScheduleVersion() }

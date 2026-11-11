@@ -119,3 +119,24 @@ test('two ready proposals competing for the same capacity cannot both commit', (
     db.close()
   }
 })
+
+test('reschedule starts at schedule and only changes candidate task days', () => {
+  const db = openForTest()
+  try {
+    const repo = createPlannerRepo(db)
+    const service = new PlannerService(repo)
+    const goal = service.createGoal({ title: '已有计划', acceptanceCriteria: '完成计划', deadline: '2026-11-30' })
+    const phase = repo.createPhase({ goalId: goal.id, title: '阶段', acceptanceCriteria: '阶段完成', seq: 1 })
+    const task = repo.createTask({ goalId: goal.id, phaseId: phase.id, title: '执行', estMinutes: 30, day: '2026-11-20', seq: 1 })
+    const proposal = service.startRescheduleProposal('session-a', goal.id)
+    assert.equal(proposal.stage, 'schedule')
+    const localId = proposal.candidate.phases[0]!.tasks[0]!.localId
+    const ready = service.advanceSchedule('session-a', proposal.id, 0, { tasks: [{ taskLocalId: localId, day: '2026-11-21' }], orderingConstraints: [] })
+    assert.equal(ready.status, 'ready_for_preview')
+    assert.equal(repo.getTask(task.id)?.day, '2026-11-20')
+    assert.equal(ready.proposal.candidate.phases[0]!.tasks[0]!.day, '2026-11-21')
+    if (ready.status !== 'ready_for_preview') return
+    service.commitProposal(ready.previewToken, proposal.id, 1)
+    assert.equal(repo.getTask(task.id)?.day, '2026-11-21')
+  } finally { db.close() }
+})
