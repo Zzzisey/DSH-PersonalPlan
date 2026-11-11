@@ -14,3 +14,6 @@ logs/
 *.log
 .DS_Store
 Thumbs.db
+
+# 私有设计文档仅保留在本地，不推送到公开仓库
+docs/
