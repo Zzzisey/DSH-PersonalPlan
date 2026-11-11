@@ -16,6 +16,7 @@ import type {
   StructureProposalCommand,
 } from '../core/types.js'
 import { PROPOSAL_TTL_MS } from '../core/policy.js'
+import { cropDiff, diffPlan, type PlanDiff } from '../core/diff.js'
 import { advanceProposalState, discardProposalState, reopenProposal } from '../core/proposal.js'
 import {
   addDays,
@@ -90,6 +91,13 @@ export interface OverviewView {
   goals: Array<{ goal: Goal; done: number; total: number; percent: number }>
   days: DayLoad[]
   risks: Array<{ goalId: string; title: string; remaining: number; usable: number }>
+}
+
+export interface ProposalPreview {
+  proposal: { id: string; revision: number; goalId: string }
+  month: string
+  diff: PlanDiff
+  days: Array<{ day: string; planned: number; limit: number }>
 }
 
 export type AdvanceProposalResult =
@@ -343,6 +351,78 @@ export class PlannerService {
       throw new Error('PROPOSAL_TOKEN_INVALID')
     }
     return value.ownerSessionId
+  }
+
+  queryProposalPreview(token: string, proposalId: string, expectedRevision: number, month: string): ProposalPreview {
+    const owner = this.ownerFromPreviewToken(token, proposalId)
+    const proposal = this.proposalForOwner(proposalId, owner, expectedRevision)
+    if (proposal.stage !== 'ready' || proposal.status !== 'awaiting_confirmation') throw new Error('PROPOSAL_NOT_READY')
+    const grid = monthGrid(month)
+    const from = grid[0]!
+    const to = grid[grid.length - 1]!
+    const fullDiff = diffPlan(proposal.baseline, proposal.candidate)
+    const capacity = this.repo.getCapacity()
+    const planned = new Map<string, number>()
+    for (const task of this.repo.listTasks({ from, to, limit: 200 })) {
+      if (task.status === 'done' || task.status === 'dropped' || task.day === null || task.goalId === proposal.goalId) continue
+      planned.set(task.day, (planned.get(task.day) ?? 0) + task.estMinutes)
+    }
+    for (const task of proposal.candidate.phases.flatMap((phase) => phase.tasks)) {
+      if (task.day === null || task.day < from || task.day > to || task.completion.isCompleted) continue
+      planned.set(task.day, (planned.get(task.day) ?? 0) + (task.estMinutes ?? 0))
+    }
+    return {
+      proposal: { id: proposal.id, revision: proposal.revision, goalId: proposal.goalId },
+      month,
+      diff: cropDiff(fullDiff, from, to),
+      days: grid.map((day) => ({ day, planned: planned.get(day) ?? 0, limit: limitFor(day, capacity) })),
+    }
+  }
+
+  commitProposal(token: string, proposalId: string, expectedRevision: number): { phases: number; tasks: number; scheduleVersion: number } {
+    const owner = this.ownerFromPreviewToken(token, proposalId)
+    const preflight = this.proposalForOwner(proposalId, owner, expectedRevision)
+    if (preflight.stage !== 'ready' || preflight.status !== 'awaiting_confirmation') throw new Error('PROPOSAL_NOT_READY')
+    const result = this.repo.transaction(() => {
+      const proposal = this.proposalForOwner(proposalId, owner, expectedRevision)
+      if (proposal.stage !== 'ready' || proposal.status !== 'awaiting_confirmation') throw new Error('PROPOSAL_NOT_READY')
+      const latest = this.repo.getPlanSnapshot(proposal.goalId)
+      const goalChanged = latest === undefined || JSON.stringify(latest.goal) !== JSON.stringify(proposal.baseline.goal)
+      const alreadyPlanned = latest !== undefined && latest.phases.length > 0
+      const validation = proposal.validation
+      if (goalChanged || alreadyPlanned || validation.state !== 'evaluated' || validation.checkedStage !== 'schedule') {
+        const stale = { ...proposal, status: 'stale' as const, revision: proposal.revision + 1, updatedAt: new Date().toISOString() }
+        this.repo.updateProposal(stale, expectedRevision)
+        return { stale: true as const }
+      }
+      const command: ScheduleProposalCommand = {
+        tasks: proposal.candidate.phases.flatMap((phase) => phase.tasks.map((task) => ({ taskLocalId: task.localId, day: task.day ?? '' }))),
+        orderingConstraints: validation.orderingConstraints,
+      }
+      const { external, capacity } = this.scheduleContext(proposal, command)
+      if (validateSchedule(proposal.candidate, command, {
+        deadline: proposal.baseline.goal.deadline,
+        externalMinutes: external,
+        capacityFor: (day) => limitFor(day, capacity),
+      }).length > 0) {
+        const stale = { ...proposal, status: 'stale' as const, revision: proposal.revision + 1, updatedAt: new Date().toISOString() }
+        this.repo.updateProposal(stale, expectedRevision)
+        return { stale: true as const }
+      }
+      let tasks = 0
+      for (const phase of proposal.candidate.phases) {
+        const created = this.repo.createPhase({ goalId: proposal.goalId, title: phase.title, acceptanceCriteria: phase.acceptanceCriteria, seq: phase.seq })
+        for (const task of phase.tasks) {
+          if (task.estMinutes === null || task.day === null) throw new Error('PROPOSAL_NOT_READY')
+          this.repo.createTask({ goalId: proposal.goalId, phaseId: created.id, title: task.title, priority: task.priority, estMinutes: task.estMinutes, day: task.day, seq: task.seq })
+          tasks += 1
+        }
+      }
+      this.repo.updateProposal({ ...proposal, status: 'committed', revision: proposal.revision + 1, updatedAt: new Date().toISOString() }, expectedRevision)
+      return { stale: false as const, phases: proposal.candidate.phases.length, tasks }
+    })
+    if (result.stale) throw new Error('PROPOSAL_STALE')
+    return { phases: result.phases, tasks: result.tasks, scheduleVersion: this.repo.getScheduleVersion() }
   }
 
   queryTasks(filter: TaskFilter = {}): Task[] { return this.repo.listTasks(filter) }
