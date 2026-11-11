@@ -27,3 +27,13 @@ export function registerLegacyPlannerPrompt(ctx: Context): void {
       + '不要声称任务已创建，除非 plan_commit 返回成功。容量规则存在数据库里，不在配置里。',
   }), 'planner: prompt')
 }
+
+export function registerStagedPlannerPrompt(ctx: Context): void {
+  ctx.effect(() => ctx.systemPrompt.section({
+    name: PROMPT_BLOCK,
+    order: PROMPT_ORDER,
+    text: '个人计划 staged 流程：正式层级只有 Goal → Phase → Task，PlanProposal 不是正式层级。先创建带验收标准的 Goal，再用 planner_plan_create 开始同一份 Proposal。'
+      + '严格按 structure（标题/验收标准/优先级）→ estimate（15–120 分钟且为 15 的倍数）→ schedule（日期与依赖）推进；每阶段最多语义修订 2 次。'
+      + 'ready 前绝不能声称 Phase/Task 已正式创建；ready 后让用户打开最终日历预览，只有明确确认后才能提交。不要在工具外启动另一套规划 LLM。',
+  }), 'planner: staged prompt')
+}
