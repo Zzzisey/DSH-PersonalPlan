@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 /** 当前 schema 版本；加字段时 +1 并在 migrate 里补一段。 */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface DbConfig {
   /** 绝对路径；留空用 `~/.dsh/personal-planner/planner.sqlite`。 */
@@ -136,6 +136,69 @@ function migrateToV2(db: DatabaseSync): void {
   `)
 }
 
+/** v3：增加 staged Proposal 存储与正式计划兼容列，不改写 legacy 工作流数据。 */
+function migrateToV3(db: DatabaseSync): void {
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    db.exec(`
+    alter table goal add column acceptance_criteria text
+      check (acceptance_criteria is null or length(trim(acceptance_criteria)) between 1 and 1000);
+    alter table phase add column acceptance_criteria text
+      check (acceptance_criteria is null or length(trim(acceptance_criteria)) between 1 and 1000);
+    alter table phase add column completed_at text;
+    alter table task add column seq integer not null default 0;
+    alter table task add column completed_at text;
+
+    with ranked as (
+      select id, row_number() over (
+        partition by phase_id
+        order by (day is null), day, created_at, id
+      ) as next_seq
+      from task
+    )
+    update task set seq = (select next_seq from ranked where ranked.id = task.id);
+
+    create table plan_proposal (
+      id                    text primary key,
+      goal_id               text not null references goal(id),
+      owner_session_id      text not null,
+      operation             text not null check (operation in ('create','reschedule','modify','replan')),
+      stage                 text not null check (stage in ('structure','estimate','schedule','ready')),
+      status                text not null check (status in ('editing','awaiting_confirmation','committed','discarded','stale')),
+      revision              integer not null check (revision >= 0),
+      base_schedule_version integer not null check (base_schedule_version >= 0),
+      baseline_json         text not null,
+      candidate_json        text not null,
+      validation_json       text not null,
+      created_at            text not null,
+      updated_at            text not null,
+      expires_at            text
+    );
+
+    create table planner_meta (
+      key        text primary key,
+      value      text not null,
+      updated_at text not null
+    );
+
+    create index idx_plan_proposal_owner_status_updated
+      on plan_proposal(owner_session_id, status, updated_at);
+    create index idx_plan_proposal_goal_status_updated
+      on plan_proposal(goal_id, status, updated_at);
+    create index idx_plan_proposal_status_expiry
+      on plan_proposal(status, expires_at);
+
+    insert into planner_meta (key, value, updated_at)
+      values ('schedule_version', '0', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+    PRAGMA user_version = 3;
+  `)
+    db.exec('COMMIT')
+  } catch (error) {
+    try { db.exec('ROLLBACK') } catch { /* SQLite 已自动回滚 */ }
+    throw error
+  }
+}
+
 /**
  * 建表或升级到当前版本。
  * @param db - 已打开的连接。
@@ -152,6 +215,9 @@ export function migrate(db: DatabaseSync): void {
   if (version < 2) {
     migrateToV2(db)
     db.exec('PRAGMA user_version = 2')
+  }
+  if (version < 3) {
+    migrateToV3(db)
   }
 }
 

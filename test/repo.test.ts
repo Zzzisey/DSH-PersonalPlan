@@ -6,6 +6,7 @@ import {
   openRepoForTest,
 } from './helpers/repoHarness.ts'
 import { openV1ForTest } from './helpers/schemaFixtures.ts'
+import { createV2MigrationInputCopy } from './helpers/schemaFixtures.ts'
 
 test('建目标与任务后能查回来', () => {
   const { db, repo } = openRepoForTest()
@@ -109,25 +110,25 @@ test('草稿记录"需要用户决定"与选项，override 也能落日志', () 
   db.close()
 })
 
-test('空库创建完整 v2 schema', () => {
+test('空库创建完整 v3 schema', () => {
   const { db } = openRepoForTest()
   const row = db.prepare('PRAGMA user_version').get() as { user_version: number }
   assert.equal(row.user_version, SCHEMA_VERSION)
   const tables = (db.prepare("select name from sqlite_master where type = 'table' and name not like 'sqlite_%'").all() as Array<{ name: string }>)
     .map((entry) => entry.name)
     .sort()
-  assert.deepEqual(tables, ['check_log', 'draft', 'goal', 'phase', 'setting', 'task'])
+  assert.deepEqual(tables, ['check_log', 'draft', 'goal', 'phase', 'plan_proposal', 'planner_meta', 'setting', 'task'])
   const columns = db.prepare('PRAGMA table_info(draft)').all() as Array<{ name: string }>
   assert.ok(columns.some((column) => column.name === 'decision_required'))
   assert.ok(columns.some((column) => column.name === 'options_json'))
   db.close()
 })
 
-test('真实 v1 fixture 升级到 v2，并保留 draft 与 check_log', () => {
+test('真实 v1 fixture 升级到 v3，并保留 draft 与 check_log', () => {
   const db = openV1ForTest()
   migrate(db)
   const version = db.prepare('PRAGMA user_version').get() as { user_version: number }
-  assert.equal(version.user_version, 2)
+  assert.equal(version.user_version, 3)
   const draft = db.prepare("select id,goal_id,decision_required,options_json from draft where id = 'd_v1'").get() as {
     id: string; goal_id: string; decision_required: number; options_json: string | null
   }
@@ -146,13 +147,13 @@ test('真实 v1 fixture 升级到 v2，并保留 draft 与 check_log', () => {
   db.close()
 })
 
-test('v2 真实列与 CHECK / FK 约束保持生效', () => {
+test('v3 保留 legacy 列与 CHECK / FK 约束', () => {
   const { db } = openRepoForTest()
   const columns = (table: string): string[] => (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name)
-  assert.deepEqual(columns('goal'), ['id', 'title', 'motivation', 'deadline', 'status', 'created_at', 'updated_at'])
-  assert.deepEqual(columns('phase'), ['id', 'goal_id', 'title', 'seq', 'start_day', 'end_day', 'status', 'created_at', 'updated_at'])
+  assert.deepEqual(columns('goal'), ['id', 'title', 'motivation', 'deadline', 'status', 'created_at', 'updated_at', 'acceptance_criteria'])
+  assert.deepEqual(columns('phase'), ['id', 'goal_id', 'title', 'seq', 'start_day', 'end_day', 'status', 'created_at', 'updated_at', 'acceptance_criteria', 'completed_at'])
   assert.deepEqual(columns('task'), [
-    'id', 'goal_id', 'phase_id', 'title', 'day', 'est_minutes', 'actual_minutes', 'priority', 'status', 'note', 'created_at', 'updated_at',
+    'id', 'goal_id', 'phase_id', 'title', 'day', 'est_minutes', 'actual_minutes', 'priority', 'status', 'note', 'created_at', 'updated_at', 'seq', 'completed_at',
   ])
   assert.deepEqual(columns('draft'), [
     'id', 'goal_id', 'mode', 'payload_json', 'verdict', 'status', 'created_at', 'expires_at', 'decision_required', 'options_json',
@@ -160,11 +161,11 @@ test('v2 真实列与 CHECK / FK 约束保持生效', () => {
 
   const stamp = '2026-01-01T00:00:00.000Z'
   assert.throws(
-    () => db.prepare("insert into goal values ('g_bad','   ',null,null,'active',?,?)").run(stamp, stamp),
+    () => db.prepare("insert into goal (id,title,motivation,deadline,status,created_at,updated_at) values ('g_bad','   ',null,null,'active',?,?)").run(stamp, stamp),
     /CHECK constraint failed/,
   )
   assert.throws(
-    () => db.prepare("insert into phase values ('p_bad','g_missing','阶段',1,null,null,'planned',?,?)").run(stamp, stamp),
+    () => db.prepare("insert into phase (id,goal_id,title,seq,start_day,end_day,status,created_at,updated_at) values ('p_bad','g_missing','阶段',1,null,null,'planned',?,?)").run(stamp, stamp),
     /FOREIGN KEY constraint failed/,
   )
   assert.throws(
@@ -182,6 +183,26 @@ test('v2 真实列与 CHECK / FK 约束保持生效', () => {
       values (?,'other','x','pass','[]')`).run(stamp),
     /CHECK constraint failed/,
   )
+  db.close()
+})
+
+test('v2 fixture 增量升级到 v3，并稳定回填 task.seq', () => {
+  const db = createV2MigrationInputCopy()
+  migrate(db)
+  migrate(db)
+  assert.equal((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 3)
+  assert.deepEqual(
+    db.prepare('select id,seq,completed_at from task order by id').all().map((row) => ({ ...row })),
+    [
+      { id: 't_doing', seq: 1, completed_at: null },
+      { id: 't_done', seq: 1, completed_at: null },
+      { id: 't_dropped', seq: 1, completed_at: null },
+      { id: 't_loose', seq: 1, completed_at: null },
+      { id: 't_todo', seq: 1, completed_at: null },
+    ],
+  )
+  assert.equal((db.prepare("select value from planner_meta where key = 'schedule_version'").get() as { value: string }).value, '0')
+  assert.equal((db.prepare('select count(*) as n from plan_proposal').get() as { n: number }).n, 0)
   db.close()
 })
 
