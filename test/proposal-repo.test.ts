@@ -75,3 +75,32 @@ test('schedule_version 初始为 0，损坏值不伪装成默认值', () => {
   assert.throws(() => repo.getScheduleVersion(), hasCode('PROPOSAL_DATA_CORRUPT'))
   db.close()
 })
+
+test('正式计划和容量变化增加一次 schedule_version，事务回滚不增加', () => {
+  const { db, repo } = openRepoForTest()
+  const goal = repo.createGoal({ title: '目标', motivation: '原因' })
+  assert.equal(repo.getScheduleVersion(), 1)
+  repo.updateGoal(goal.id, { motivation: '新原因' })
+  assert.equal(repo.getScheduleVersion(), 1, '只改 motivation 不增加版本')
+  repo.updateGoal(goal.id, { title: '新目标' })
+  assert.equal(repo.getScheduleVersion(), 2)
+
+  let taskId = ''
+  repo.transaction(() => {
+    const phase = repo.createPhase({ goalId: goal.id, title: '阶段', seq: 1 })
+    taskId = repo.createTask({ goalId: goal.id, phaseId: phase.id, title: '任务' }).id
+  })
+  assert.equal(repo.getScheduleVersion(), 3, '一个正式计划事务只增加一次')
+
+  repo.updateTasks([{ id: taskId, day: '2026-11-12' }])
+  assert.equal(repo.getScheduleVersion(), 4)
+
+  repo.setCapacity({ weekdayMinutes: 180, weekendMinutes: 90, overrides: {} })
+  assert.equal(repo.getScheduleVersion(), 5)
+  assert.throws(() => repo.transaction(() => {
+    repo.createTask({ goalId: goal.id, title: '不应提交' })
+    throw new Error('rollback')
+  }), /rollback/)
+  assert.equal(repo.getScheduleVersion(), 5)
+  db.close()
+})

@@ -208,6 +208,7 @@ test('v2 fixture 增量升级到 v3，并稳定回填 task.seq', () => {
 
 test('transaction 回调抛错时回滚此前全部写入', () => {
   const { db, repo } = openRepoForTest()
+  const version = repo.getScheduleVersion()
   assert.throws(() => repo.transaction(() => {
     repo.createGoal({ title: '不应留下' })
     repo.createTask({ title: '也不应留下' })
@@ -215,6 +216,7 @@ test('transaction 回调抛错时回滚此前全部写入', () => {
   }), /forced failure/)
   assert.equal((db.prepare('select count(*) as n from goal').get() as { n: number }).n, 0)
   assert.equal((db.prepare('select count(*) as n from task').get() as { n: number }).n, 0)
+  assert.equal(repo.getScheduleVersion(), version)
   db.close()
 })
 

@@ -169,6 +169,7 @@ test('decision 分支要求用户选择；accept_overload 后原子提交且重�
     assert.match(refused, /^错误：这份草稿需要用户决定/)
     assert.equal(repo.listPhases(goal.id).length, 0)
 
+    const versionBeforeCommit = repo.getScheduleVersion()
     const committed = text(await harness.run('planner_plan_commit', {
       draft_id: draftId,
       decision: 'accept_overload',
@@ -178,6 +179,7 @@ test('decision 分支要求用户选择；accept_overload 后原子提交且重�
     assert.equal(repo.listPhases(goal.id).length, 1)
     assert.equal(repo.listTasks({ goalId: goal.id }).length, 3)
     assert.equal(repo.getDraft(draftId)?.status, 'committed')
+    assert.equal(repo.getScheduleVersion(), versionBeforeCommit + 1, 'legacy commit 只增加一次正式计划版本')
     assert.equal((db.prepare("select count(*) as n from check_log where target = ? and kind = 'override'").get(draftId) as { n: number }).n, 1)
     assert.equal((db.prepare("select count(*) as n from check_log where target = ? and kind = 'commit'").get(draftId) as { n: number }).n, 1)
 

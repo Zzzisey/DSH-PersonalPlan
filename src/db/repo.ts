@@ -127,6 +127,7 @@ export interface GoalPatch {
   motivation?: string | null
   deadline?: string | null
   status?: GoalStatus
+  acceptanceCriteria?: string | null
 }
 
 /**
@@ -145,6 +146,7 @@ function updateGoal(db: DatabaseSync, id: string, patch: GoalPatch): Goal | unde
   if (patch.motivation !== undefined) { sets.push('motivation = ?'); values.push(patch.motivation) }
   if (patch.deadline !== undefined) { sets.push('deadline = ?'); values.push(patch.deadline) }
   if (patch.status !== undefined) { sets.push('status = ?'); values.push(patch.status) }
+  if (patch.acceptanceCriteria !== undefined) { sets.push('acceptance_criteria = ?'); values.push(patch.acceptanceCriteria) }
   if (sets.length === 0) return current
   sets.push('updated_at = ?')
   values.push(nowIso(), id)
@@ -258,7 +260,7 @@ export interface TaskPatch {
  */
 function updateTasks(db: DatabaseSync, patches: TaskPatch[]): Task[] {
   if (patches.length === 0) return []
-  return transaction(db, () => patches.map((patch) => {
+  return patches.map((patch) => {
     const current = getTask(db, patch.id)
     if (current === undefined) throw new Error(`任务 ${patch.id} 不存在`)
     const sets: string[] = []
@@ -275,7 +277,7 @@ function updateTasks(db: DatabaseSync, patches: TaskPatch[]): Task[] {
     values.push(nowIso(), patch.id)
     db.prepare(`update task set ${sets.join(', ')} where id = ?`).run(...values as never[])
     return getTask(db, patch.id)!
-  }))
+  })
 }
 
 // ---------------------------------------------------------------- draft
@@ -539,19 +541,64 @@ function getScheduleVersion(db: DatabaseSync): number {
   return Number(value)
 }
 
+function incrementScheduleVersion(db: DatabaseSync): void {
+  const current = getScheduleVersion(db)
+  const result = db.prepare(`update planner_meta set value = ?, updated_at = ?
+    where key = 'schedule_version' and value = ?`).run(String(current + 1), nowIso(), String(current))
+  if (result.changes !== 1) throw new PlannerStorageError('PROPOSAL_DATA_CORRUPT', 'schedule_version 更新失败')
+}
+
 /** 将运行时数据访问绑定到一个 SQLite 连接。 */
 export function createPlannerRepo(db: DatabaseSync) {
+  let transactionDepth = 0
+  let scheduleMutationPending = false
+
+  const markScheduleMutation = (): void => { scheduleMutationPending = true }
+  const runTransaction = <T>(fn: () => T): T => {
+    if (transactionDepth > 0) return fn()
+    transactionDepth = 1
+    scheduleMutationPending = false
+    try {
+      return transaction(db, () => {
+        const value = fn()
+        if (scheduleMutationPending) incrementScheduleVersion(db)
+        return value
+      })
+    } finally {
+      transactionDepth = 0
+      scheduleMutationPending = false
+    }
+  }
+  const formalMutation = <T>(fn: () => T): T => runTransaction(() => {
+    const value = fn()
+    markScheduleMutation()
+    return value
+  })
+
   return {
-    createGoal: (input: CreateGoalInput) => createGoal(db, input),
+    createGoal: (input: CreateGoalInput) => formalMutation(() => createGoal(db, input)),
     getGoal: (id: string) => getGoal(db, id),
     listGoals: (status?: string) => listGoals(db, status),
-    updateGoal: (id: string, patch: GoalPatch) => updateGoal(db, id, patch),
-    createPhase: (input: CreatePhaseInput) => createPhase(db, input),
+    updateGoal: (id: string, patch: GoalPatch) => runTransaction(() => {
+      const before = getGoal(db, id)
+      const beforeAcceptance = db.prepare('select acceptance_criteria as value from goal where id = ?').get(id) as { value: string | null } | undefined
+      const updated = updateGoal(db, id, patch)
+      if (before !== undefined && updated !== undefined && (
+        before.title !== updated.title
+        || before.deadline !== updated.deadline
+        || before.status !== updated.status
+        || (patch.acceptanceCriteria !== undefined && beforeAcceptance?.value !== patch.acceptanceCriteria)
+      )) markScheduleMutation()
+      return updated
+    }),
+    createPhase: (input: CreatePhaseInput) => formalMutation(() => createPhase(db, input)),
     listPhases: (goalId: string) => listPhases(db, goalId),
-    createTask: (input: CreateTaskInput) => createTask(db, input),
+    createTask: (input: CreateTaskInput) => formalMutation(() => createTask(db, input)),
     getTask: (id: string) => getTask(db, id),
     listTasks: (filter: TaskFilter = {}) => listTasks(db, filter),
-    updateTasks: (patches: TaskPatch[]) => updateTasks(db, patches),
+    updateTasks: (patches: TaskPatch[]) => patches.length === 0
+      ? []
+      : formalMutation(() => updateTasks(db, patches)),
     createDraft: (input: CreateDraftInput) => createDraft(db, input),
     getDraft: (id: string) => getDraft(db, id),
     updateDraftPayload: (id: string, payload: unknown) => updateDraftPayload(db, id, payload),
@@ -560,14 +607,18 @@ export function createPlannerRepo(db: DatabaseSync) {
     setDraftDecision: (id: string, required: boolean, options: unknown) => setDraftDecision(db, id, required, options),
     appendCheck: (entry: CheckEntry) => appendCheck(db, entry),
     getCapacity: () => getCapacity(db),
-    setCapacity: (rules: CapacityRules) => setCapacity(db, rules),
+    setCapacity: (rules: CapacityRules) => runTransaction(() => {
+      const before = getCapacity(db)
+      setCapacity(db, rules)
+      if (JSON.stringify(before) !== JSON.stringify(rules)) markScheduleMutation()
+    }),
     createProposal: (proposal: PlanProposal) => createProposal(db, proposal),
     getProposal: (id: string) => getProposal(db, id),
     getProposalForOwner: (id: string, ownerSessionId: string) => getProposalForOwner(db, id, ownerSessionId),
     listProposalsByStatus: (status: ProposalStatus, ownerSessionId?: string) => listProposalsByStatus(db, status, ownerSessionId),
     updateProposal: (proposal: PlanProposal, expectedRevision: number) => updateProposal(db, proposal, expectedRevision),
     getScheduleVersion: () => getScheduleVersion(db),
-    transaction: <T>(fn: () => T) => transaction(db, fn),
+    transaction: <T>(fn: () => T) => runTransaction(fn),
   }
 }
 
