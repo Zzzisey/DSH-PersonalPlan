@@ -92,3 +92,30 @@ test('ready preview and commit stay consistent and stale goal changes are reject
     db.close()
   }
 })
+
+test('two ready proposals competing for the same capacity cannot both commit', () => {
+  const db = openForTest()
+  try {
+    const repo = createPlannerRepo(db)
+    repo.setCapacity({ weekdayMinutes: 60, weekendMinutes: 60, overrides: {} })
+    const service = new PlannerService(repo)
+    const makeReady = (session: string, title: string) => {
+      const goal = service.createGoal({ title, acceptanceCriteria: '完成验收', deadline: '2026-11-30' })
+      const proposal = service.startCreateProposal(session, goal.id)
+      const structure = service.advanceStructure(session, proposal.id, 0, { phases: [{ title: '完成', acceptanceCriteria: '完成验收', seq: 1, tasks: [{ title: `${title}任务`, priority: 'P0', seq: 1 }] }] })
+      if (structure.status !== 'accepted') throw new Error('unexpected')
+      const taskId = structure.proposal.candidate.phases[0]!.tasks[0]!.localId
+      service.advanceEstimate(session, proposal.id, 1, { tasks: [{ taskLocalId: taskId, estMinutes: 60 }] })
+      const ready = service.advanceSchedule(session, proposal.id, 2, { tasks: [{ taskLocalId: taskId, day: '2026-11-20' }], orderingConstraints: [] })
+      if (ready.status !== 'ready_for_preview') throw new Error('unexpected')
+      return ready
+    }
+    const first = makeReady('session-a', '项目一')
+    const second = makeReady('session-b', '项目二')
+    service.commitProposal(first.previewToken, first.proposal.id, 3)
+    assert.throws(() => service.commitProposal(second.previewToken, second.proposal.id, 3), /PROPOSAL_STALE/)
+    assert.equal(repo.getProposal(second.proposal.id).status, 'stale')
+  } finally {
+    db.close()
+  }
+})

@@ -28,8 +28,8 @@ export interface RouteHarness {
  * 直接驱动 WebRoute handler。测试环境不开放 loopback TCP，因此用真实 Readable 请求体和最小响应对象，
  * 同时保留 isLoopbackRequest 所读取的 method/url/headers/socket.remoteAddress。
  */
-export async function createRouteHarness(db: DatabaseSync): Promise<RouteHarness> {
-  const route = createPlannerRoutes(new PlannerService(createPlannerRepo(db)))[0]
+export async function createRouteHarness(db: DatabaseSync, service = new PlannerService(createPlannerRepo(db))): Promise<RouteHarness> {
+  const route = createPlannerRoutes(service)[0]
   if (route === undefined) throw new Error('planner route 未注册')
   return {
     async request(input) {

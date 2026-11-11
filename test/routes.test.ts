@@ -5,6 +5,7 @@ import {
   openForTest,
 } from './helpers/repoHarness.ts'
 import { createRouteHarness } from './helpers/routeHarness.ts'
+import { PlannerService } from '../src/host/planner-service.ts'
 
 test('month / day 路由返回 legacy 日历口径', async () => {
   const db = openForTest()
@@ -44,6 +45,35 @@ test('month / day 路由返回 legacy 日历口径', async () => {
     const invalid = await server.request({ path: '/personal-planner/api/day?day=11-10-2026' })
     assert.equal(invalid.status, 400)
     assert.deepEqual(invalid.body, { ok: false, error: '需要 day=YYYY-MM-DD' })
+  } finally {
+    await server.close()
+    db.close()
+  }
+})
+
+test('proposal preview API authenticates by token and commits the exact revision', async () => {
+  const db = openForTest()
+  const repo = createPlannerRepo(db)
+  const service = new PlannerService(repo)
+  const server = await createRouteHarness(db, service)
+  try {
+    const goal = service.createGoal({ title: '发布', acceptanceCriteria: '发布成功', deadline: '2026-11-30' })
+    const started = service.startCreateProposal('route-session', goal.id)
+    const structure = service.advanceStructure('route-session', started.id, 0, { phases: [{ title: '交付', acceptanceCriteria: '验收', seq: 1, tasks: [{ title: '发布成品', priority: 'P0', seq: 1 }] }] })
+    assert.equal(structure.status, 'accepted')
+    if (structure.status !== 'accepted') return
+    const taskId = structure.proposal.candidate.phases[0]!.tasks[0]!.localId
+    service.advanceEstimate('route-session', started.id, 1, { tasks: [{ taskLocalId: taskId, estMinutes: 30 }] })
+    const ready = service.advanceSchedule('route-session', started.id, 2, { tasks: [{ taskLocalId: taskId, day: '2026-11-20' }], orderingConstraints: [] })
+    assert.equal(ready.status, 'ready_for_preview')
+    if (ready.status !== 'ready_for_preview') return
+    const query = `/personal-planner/api/proposal/preview?proposal=${encodeURIComponent(started.id)}&revision=3&month=2026-11&token=${encodeURIComponent(ready.previewToken)}`
+    const preview = await server.request({ path: query })
+    assert.equal(preview.status, 200)
+    const committed = await server.request({ method: 'POST', path: '/personal-planner/api/proposal/commit', body: { proposalId: started.id, revision: 3, token: ready.previewToken } })
+    assert.equal(committed.status, 200)
+    const repeated = await server.request({ method: 'POST', path: '/personal-planner/api/proposal/commit', body: { proposalId: started.id, revision: 3, token: ready.previewToken } })
+    assert.equal(repeated.status, 409)
   } finally {
     await server.close()
     db.close()
