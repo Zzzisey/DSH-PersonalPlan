@@ -261,6 +261,8 @@ planner-v2-compat
 
 ## 9. 阶段 5：新建计划纵向切片
 
+阶段 5/6 的首版契约已冻结：四个业务场景保留独立入口但本阶段只实现 create；1–8 个 Phase、每个 Phase 1–12 个 Task；required 依赖必须跨日；Proposal 24 小时过期；当前 Agent 自检，每阶段最多 2 次语义修订。Preview 使用 Host 基于 Tool Session 签发的短期访问令牌，API 不接受客户端声明 owner；刷新从 URL 恢复。继续修改回到 structure，discard 进入终态，第一版不支持 override。
+
 只实现：
 
 ```text

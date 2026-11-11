@@ -690,17 +690,15 @@ Skill 直接进入当前 DSH Agent 的上下文，不需要再传给工具内部
 
 ## 13. 尚待确定
 
+阶段 5/6 首版实现已冻结以下运行参数：create 使用独立 `planner_plan_create` 场景入口；每份提案包含 1–8 个阶段、每阶段 1–12 个任务；required 依赖必须安排在不同日期且前置任务更早；Proposal 默认 24 小时过期；由当前 DSH Agent 自检，不增加 Reviewer；每阶段最多允许 2 次语义修订，只有 `revise_required / return_to_structure` 可继续修订，技术错误、所有权、revision 和终态错误不可自动重试。
+
+月份 Preview 返回提案引用、变更摘要、当前月份 unchanged/added/removed 任务和 candidate 容量。浏览器不提交 `ownerSessionId`，而使用 Host 为当前 Tool Session 签发的短期 Proposal 访问令牌；刷新通过 URL 中的提案引用与令牌恢复。首版没有 override；硬性失败直接阻止确认。“继续修改”让同一 Proposal 回到 structure，“彻底放弃”进入 discarded。
+
 以下内容需要继续讨论后才能进入实现：
 
-1. 阶段数量上下限、每阶段任务数量等结构阈值；
-2. 同一天的硬依赖是允许并附加说明，还是必须拆到不同日期；
-3. 场景化工具的精确参数和结构化返回 schema；
-4. 日历月份预览 API 的精确数据结构；
-5. 提案过期时间和页面刷新后的恢复行为；
-6. DSH Agent 的三段提示词、工具重试上限、失败降级和 Eval 标准；
-7. 业务 Skill 的选择、版本记录和注入机制；
-8. 旧数据迁移时 `doing/dropped` 在最终移除 legacy 状态列时的具体物理转换方式；
-9. 重新规划时“保留未完成阶段并替换任务”的准确匹配规则。
+1. 业务 Skill 的选择、版本记录和注入机制；
+2. 旧数据迁移时 `doing/dropped` 在最终移除 legacy 状态列时的具体物理转换方式；
+3. 重新规划时“保留未完成阶段并替换任务”的准确匹配规则。
 
 ## 14. 建议实施顺序
 

@@ -798,12 +798,13 @@ src/
 
 ## 10. 待评审决策
 
+阶段 5/6 首版采用四个语义场景入口，阶段 5 只暴露 create；结构阈值为 1–8 个 Phase、每个 Phase 1–12 个 Task；required ordering 必须跨日且前置日期更早；Proposal 24 小时过期；当前 DSH Agent 自检，每阶段最多 2 次语义修订，不引入 Reviewer。
+
+Preview API 返回月份裁剪后的 unchanged/added/removed、摘要和 candidate 容量。Tool 从 `exec.agent.sessionId` 取得可信 owner，Host 签发短期 Proposal 访问令牌供 GUI 调用；API 不接受 `ownerSessionId`。URL 保存 proposal id/token 用于刷新恢复。第一版无 override；继续修改统一回到 structure，discard 进入终态。
+
 以下问题不影响模块边界，但会阻塞具体 Tool Schema 或业务实现：
 
-1. 四个场景入口 Tool 与单一 `planner_plan_start(operation)` 哪个在 Tool Eval 中更可靠；
-2. 阶段、任务数量阈值；
-3. required 依赖是否允许安排在同一天；
-4. Proposal 的默认过期策略；
-5. 是否在第一版引入独立 DSH Subagent Reviewer，还是先由当前 Agent 自检并通过 Eval 判断效果。
+1. 阶段 7 的 modify/replan 精确匹配与保留规则；
+2. 是否在后续版本引入独立 DSH Subagent Reviewer。
 
 这些决策确认前可以完成旧行为测试和纯架构边界重构。会影响 `PlanProposal`、Snapshot、validation 或 Schema 字段的决策必须在阶段 4 定义类型和 DDL 前确认；其余决策最迟在最终 Tool Schema 与 staged flow 实现前确认。
