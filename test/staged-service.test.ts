@@ -160,3 +160,37 @@ test('modify starts at the earliest affected stage and commits estimate changes'
     assert.equal(repo.getTask(task.id)?.estMinutes, 60)
   } finally { db.close() }
 })
+
+test('replan preserves completed tasks and replaces unfinished content only after confirmation', () => {
+  const db = openForTest()
+  try {
+    const repo = createPlannerRepo(db)
+    const service = new PlannerService(repo)
+    const goal = service.createGoal({ title: '重新规划', acceptanceCriteria: '完成目标', deadline: '2026-11-30' })
+    const phase = repo.createPhase({ goalId: goal.id, title: '现有阶段', acceptanceCriteria: '完成阶段', seq: 1 })
+    const done = repo.createTask({ goalId: goal.id, phaseId: phase.id, title: '已完成', priority: 'P0', estMinutes: 30, day: '2026-11-18', seq: 1 })
+    const removed = repo.createTask({ goalId: goal.id, phaseId: phase.id, title: '待替换', estMinutes: 30, day: '2026-11-20', seq: 2 })
+    repo.updateTasks([{ id: done.id, status: 'done' }])
+    const proposal = service.startReplanProposal('session-a', goal.id)
+    const structure = service.advanceStructure('session-a', proposal.id, 0, { phases: [{
+      sourcePhaseId: phase.id, title: '现有阶段', acceptanceCriteria: '完成阶段', seq: 1,
+      tasks: [
+        { sourceTaskId: done.id, title: '已完成', priority: 'P0', seq: 1 },
+        { title: '新的任务', priority: 'P1', seq: 2 },
+      ],
+    }] })
+    if (structure.status !== 'accepted') throw new Error('unexpected')
+    const tasks = structure.proposal.candidate.phases[0]!.tasks
+    const doneLocal = tasks.find((task) => task.sourceTaskId === done.id)!.localId
+    const newLocal = tasks.find((task) => task.sourceTaskId === null)!.localId
+    const estimate = service.advanceEstimate('session-a', proposal.id, 1, { tasks: [{ taskLocalId: doneLocal, estMinutes: 30 }, { taskLocalId: newLocal, estMinutes: 45 }] })
+    assert.equal(estimate.status, 'accepted')
+    const ready = service.advanceSchedule('session-a', proposal.id, 2, { tasks: [{ taskLocalId: doneLocal, day: '2026-11-18' }, { taskLocalId: newLocal, day: '2026-11-21' }], orderingConstraints: [] })
+    if (ready.status !== 'ready_for_preview') throw new Error('unexpected')
+    assert.notEqual(repo.getTask(removed.id), undefined)
+    service.commitProposal(ready.previewToken, proposal.id, 3)
+    assert.equal(repo.getTask(done.id)?.status, 'done')
+    assert.equal(repo.getTask(removed.id), undefined)
+    assert.equal(repo.listTasks({ goalId: goal.id }).some((task) => task.title === '新的任务'), true)
+  } finally { db.close() }
+})

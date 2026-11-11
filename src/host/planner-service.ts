@@ -265,6 +265,10 @@ export class PlannerService {
     return this.startProposal(ownerSessionId, goalId, 'modify', stage)
   }
 
+  startReplanProposal(ownerSessionId: string, goalId: string): PlanProposal {
+    return this.startProposal(ownerSessionId, goalId, 'replan', 'structure')
+  }
+
   getProposal(ownerSessionId: string, proposalId: string): PlanProposal {
     return this.proposalForOwner(proposalId, ownerSessionId)
   }
@@ -300,7 +304,7 @@ export class PlannerService {
         title: phase.title.trim(),
         acceptanceCriteria: phase.acceptanceCriteria.trim(),
         seq: phase.seq,
-        completion: { isCompleted: false, completedAt: null },
+        completion: phase.sourcePhaseId === undefined ? { isCompleted: false, completedAt: null } : baselinePhases.get(phase.sourcePhaseId)!.completion,
         tasks: phase.tasks.map((task) => ({
           localId: task.sourceTaskId === undefined ? `task_${randomUUID()}` : `task_${task.sourceTaskId}`,
           sourceTaskId: task.sourceTaskId ?? null,
