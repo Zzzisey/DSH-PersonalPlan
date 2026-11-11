@@ -179,6 +179,35 @@ export interface CreateTaskInput {
   seq?: number
 }
 
+export interface PhasePatch {
+  id: string
+  title?: string
+  acceptanceCriteria?: string
+  seq?: number
+}
+
+function updatePhase(db: DatabaseSync, patch: PhasePatch): void {
+  const sets: string[] = []
+  const values: unknown[] = []
+  if (patch.title !== undefined) { sets.push('title = ?'); values.push(patch.title) }
+  if (patch.acceptanceCriteria !== undefined) { sets.push('acceptance_criteria = ?'); values.push(patch.acceptanceCriteria) }
+  if (patch.seq !== undefined) { sets.push('seq = ?'); values.push(patch.seq) }
+  if (sets.length === 0) return
+  sets.push('updated_at = ?')
+  values.push(nowIso(), patch.id)
+  if (db.prepare(`update phase set ${sets.join(', ')} where id = ?`).run(...values as never[]).changes !== 1) throw new Error(`阶段 ${patch.id} 不存在`)
+}
+
+function deletePhases(db: DatabaseSync, ids: string[]): void {
+  const statement = db.prepare('delete from phase where id = ?')
+  for (const id of ids) statement.run(id)
+}
+
+function deleteTasks(db: DatabaseSync, ids: string[]): void {
+  const statement = db.prepare('delete from task where id = ?')
+  for (const id of ids) statement.run(id)
+}
+
 function createPhase(db: DatabaseSync, input: CreatePhaseInput): Phase {
   const stamp = nowIso()
   const id = newId('p')
@@ -259,6 +288,8 @@ export interface TaskPatch {
   status?: TaskStatus
   actualMinutes?: number | null
   note?: string | null
+  phaseId?: string
+  seq?: number
 }
 
 /**
@@ -281,6 +312,8 @@ function updateTasks(db: DatabaseSync, patches: TaskPatch[]): Task[] {
     if (patch.status !== undefined) { sets.push('status = ?'); values.push(patch.status) }
     if (patch.actualMinutes !== undefined) { sets.push('actual_minutes = ?'); values.push(patch.actualMinutes) }
     if (patch.note !== undefined) { sets.push('note = ?'); values.push(patch.note) }
+    if (patch.phaseId !== undefined) { sets.push('phase_id = ?'); values.push(patch.phaseId) }
+    if (patch.seq !== undefined) { sets.push('seq = ?'); values.push(patch.seq) }
     if (sets.length === 0) return current
     sets.push('updated_at = ?')
     values.push(nowIso(), patch.id)
@@ -642,6 +675,8 @@ export function createPlannerRepo(db: DatabaseSync) {
       return updated
     }),
     createPhase: (input: CreatePhaseInput) => formalMutation(() => createPhase(db, input)),
+    updatePhase: (patch: PhasePatch) => formalMutation(() => updatePhase(db, patch)),
+    deletePhases: (ids: string[]) => ids.length === 0 ? undefined : formalMutation(() => deletePhases(db, ids)),
     listPhases: (goalId: string) => listPhases(db, goalId),
     createTask: (input: CreateTaskInput) => formalMutation(() => createTask(db, input)),
     getTask: (id: string) => getTask(db, id),
@@ -649,6 +684,7 @@ export function createPlannerRepo(db: DatabaseSync) {
     updateTasks: (patches: TaskPatch[]) => patches.length === 0
       ? []
       : formalMutation(() => updateTasks(db, patches)),
+    deleteTasks: (ids: string[]) => ids.length === 0 ? undefined : formalMutation(() => deleteTasks(db, ids)),
     createDraft: (input: CreateDraftInput) => createDraft(db, input),
     getDraft: (id: string) => getDraft(db, id),
     updateDraftPayload: (id: string, payload: unknown) => updateDraftPayload(db, id, payload),

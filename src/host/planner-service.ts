@@ -261,6 +261,10 @@ export class PlannerService {
     return this.startProposal(ownerSessionId, goalId, 'reschedule', 'schedule')
   }
 
+  startModifyProposal(ownerSessionId: string, goalId: string, stage: 'structure' | 'estimate'): PlanProposal {
+    return this.startProposal(ownerSessionId, goalId, 'modify', stage)
+  }
+
   getProposal(ownerSessionId: string, proposalId: string): PlanProposal {
     return this.proposalForOwner(proposalId, ownerSessionId)
   }
@@ -269,26 +273,45 @@ export class PlannerService {
     const proposal = this.proposalForOwner(proposalId, ownerSessionId, expectedRevision)
     const issues = validateStructure(command)
     if (issues.length > 0) return { status: 'revise_required', proposal, issues }
+    const baselinePhases = new Map(proposal.baseline.phases.map((phase) => [phase.id, phase]))
+    const baselineTasks = new Map(proposal.baseline.phases.flatMap((phase) => phase.tasks.map((task) => [task.id, { phaseId: phase.id, task }] as const)))
+    const sourcePhases = command.phases.flatMap((phase) => phase.sourcePhaseId === undefined ? [] : [phase.sourcePhaseId])
+    const sourceTasks = command.phases.flatMap((phase) => phase.tasks.flatMap((task) => task.sourceTaskId === undefined ? [] : [task.sourceTaskId]))
+    if (proposal.operation !== 'create' && (
+      new Set(sourcePhases).size !== sourcePhases.length || new Set(sourceTasks).size !== sourceTasks.length
+      || sourcePhases.some((id) => !baselinePhases.has(id)) || sourceTasks.some((id) => !baselineTasks.has(id))
+    )) throw new Error('PROPOSAL_SOURCE_INVALID')
+    for (const phase of proposal.baseline.phases) {
+      const commandPhase = command.phases.find((item) => item.sourcePhaseId === phase.id)
+      if (phase.completion.isCompleted && (commandPhase === undefined || commandPhase.title.trim() !== phase.title
+        || commandPhase.acceptanceCriteria.trim() !== phase.acceptanceCriteria || commandPhase.seq !== phase.seq)) throw new Error('COMPLETED_PHASE_IMMUTABLE')
+      for (const task of phase.tasks) if (task.completion.isCompleted) {
+        const commandTask = commandPhase?.tasks.find((item) => item.sourceTaskId === task.id)
+        if (commandTask === undefined || commandTask.title.trim() !== task.title || commandTask.priority !== task.priority || commandTask.seq !== task.seq) {
+          throw new Error('COMPLETED_TASK_IMMUTABLE')
+        }
+      }
+    }
     const candidate: ProposalSnapshotV1 = {
       schemaVersion: 1,
       phases: command.phases.map((phase) => ({
-        localId: `phase_${randomUUID()}`,
-        sourcePhaseId: null,
+        localId: phase.sourcePhaseId === undefined ? `phase_${randomUUID()}` : `phase_${phase.sourcePhaseId}`,
+        sourcePhaseId: phase.sourcePhaseId ?? null,
         title: phase.title.trim(),
         acceptanceCriteria: phase.acceptanceCriteria.trim(),
         seq: phase.seq,
         completion: { isCompleted: false, completedAt: null },
         tasks: phase.tasks.map((task) => ({
-          localId: `task_${randomUUID()}`,
-          sourceTaskId: null,
+          localId: task.sourceTaskId === undefined ? `task_${randomUUID()}` : `task_${task.sourceTaskId}`,
+          sourceTaskId: task.sourceTaskId ?? null,
           title: task.title.trim(),
           priority: task.priority,
           seq: task.seq,
-          completion: { isCompleted: false, completedAt: null },
-          estMinutes: null,
-          day: null,
-          actualMinutes: null,
-          note: null,
+          completion: task.sourceTaskId === undefined ? { isCompleted: false, completedAt: null } : baselineTasks.get(task.sourceTaskId)!.task.completion,
+          estMinutes: task.sourceTaskId !== undefined && baselineTasks.get(task.sourceTaskId)!.task.completion.isCompleted ? baselineTasks.get(task.sourceTaskId)!.task.estMinutes : null,
+          day: task.sourceTaskId !== undefined && baselineTasks.get(task.sourceTaskId)!.task.completion.isCompleted ? baselineTasks.get(task.sourceTaskId)!.task.day : null,
+          actualMinutes: task.sourceTaskId === undefined ? null : baselineTasks.get(task.sourceTaskId)!.task.actualMinutes,
+          note: task.sourceTaskId === undefined ? null : baselineTasks.get(task.sourceTaskId)!.task.note,
         })),
       })),
     }
@@ -304,6 +327,9 @@ export class PlannerService {
     const issues = validateEstimate(proposal.candidate, command)
     if (issues.length > 0) return { status: 'revise_required', proposal, issues }
     const estimates = new Map(command.tasks.map((task) => [task.taskLocalId, task.estMinutes]))
+    if (proposal.candidate.phases.flatMap((phase) => phase.tasks).some((task) => task.completion.isCompleted && estimates.get(task.localId) !== task.estMinutes)) {
+      throw new Error('COMPLETED_TASK_IMMUTABLE')
+    }
     const candidate = {
       ...proposal.candidate,
       phases: proposal.candidate.phases.map((phase) => ({
@@ -331,7 +357,7 @@ export class PlannerService {
 
   advanceSchedule(ownerSessionId: string, proposalId: string, expectedRevision: number, command: ScheduleProposalCommand): AdvanceProposalResult {
     const proposal = this.proposalForOwner(proposalId, ownerSessionId, expectedRevision)
-    if (proposal.operation === 'reschedule') {
+    if (proposal.operation !== 'create') {
       const days = new Map(command.tasks.map((task) => [task.taskLocalId, task.day]))
       const completedChanged = proposal.candidate.phases.flatMap((phase) => phase.tasks)
         .some((task) => task.completion.isCompleted && days.get(task.localId) !== task.day)
@@ -459,7 +485,7 @@ export class PlannerService {
           .map((task) => ({ id: task.sourceTaskId!, day: task.day }))
         this.repo.updateTasks(patches)
         tasks = patches.length
-      } else {
+      } else if (proposal.operation === 'create') {
         for (const phase of proposal.candidate.phases) {
           const created = this.repo.createPhase({ goalId: proposal.goalId, title: phase.title, acceptanceCriteria: phase.acceptanceCriteria, seq: phase.seq })
           for (const task of phase.tasks) {
@@ -468,6 +494,34 @@ export class PlannerService {
             tasks += 1
           }
         }
+      } else {
+        const candidatePhaseIds = new Set(proposal.candidate.phases.flatMap((phase) => phase.sourcePhaseId === null ? [] : [phase.sourcePhaseId]))
+        const candidateTaskIds = new Set(proposal.candidate.phases.flatMap((phase) => phase.tasks.flatMap((task) => task.sourceTaskId === null ? [] : [task.sourceTaskId])))
+        const removedTasks = proposal.baseline.phases.flatMap((phase) => phase.tasks)
+          .filter((task) => !candidateTaskIds.has(task.id)).map((task) => task.id)
+        const removedPhases = proposal.baseline.phases.filter((phase) => !candidatePhaseIds.has(phase.id)).map((phase) => phase.id)
+        this.repo.deleteTasks(removedTasks)
+        const phaseIds = new Map<string, string>()
+        for (const phase of proposal.candidate.phases) {
+          if (phase.sourcePhaseId === null) {
+            const created = this.repo.createPhase({ goalId: proposal.goalId, title: phase.title, acceptanceCriteria: phase.acceptanceCriteria, seq: phase.seq })
+            phaseIds.set(phase.localId, created.id)
+          } else {
+            this.repo.updatePhase({ id: phase.sourcePhaseId, title: phase.title, acceptanceCriteria: phase.acceptanceCriteria, seq: phase.seq })
+            phaseIds.set(phase.localId, phase.sourcePhaseId)
+          }
+        }
+        for (const phase of proposal.candidate.phases) for (const task of phase.tasks) {
+          if (task.estMinutes === null || task.day === null) throw new Error('PROPOSAL_NOT_READY')
+          const phaseId = phaseIds.get(phase.localId)!
+          if (task.sourceTaskId === null) {
+            this.repo.createTask({ goalId: proposal.goalId, phaseId, title: task.title, priority: task.priority, estMinutes: task.estMinutes, day: task.day, seq: task.seq, ...(task.note === null ? {} : { note: task.note }) })
+          } else {
+            this.repo.updateTasks([{ id: task.sourceTaskId, phaseId, title: task.title, priority: task.priority, estMinutes: task.estMinutes, day: task.day, seq: task.seq, note: task.note }])
+          }
+          tasks += 1
+        }
+        this.repo.deletePhases(removedPhases)
       }
       this.repo.updateProposal({ ...proposal, status: 'committed', revision: proposal.revision + 1, updatedAt: new Date().toISOString() }, expectedRevision)
       return { stale: false as const, phases: proposal.operation === 'reschedule' ? 0 : proposal.candidate.phases.length, tasks }

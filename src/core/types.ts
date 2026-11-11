@@ -225,10 +225,11 @@ export interface PlanProposal {
 /** Agent 阶段输入；与持久化的完整 Candidate 分离。 */
 export interface StructureProposalCommand {
   phases: Array<{
+    sourcePhaseId?: string
     title: string
     acceptanceCriteria: string
     seq: number
-    tasks: Array<{ title: string; priority: Priority; seq: number }>
+    tasks: Array<{ sourceTaskId?: string; title: string; priority: Priority; seq: number }>
   }>
 }
 

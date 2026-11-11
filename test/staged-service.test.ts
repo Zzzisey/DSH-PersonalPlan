@@ -140,3 +140,23 @@ test('reschedule starts at schedule and only changes candidate task days', () =>
     assert.equal(repo.getTask(task.id)?.day, '2026-11-21')
   } finally { db.close() }
 })
+
+test('modify starts at the earliest affected stage and commits estimate changes', () => {
+  const db = openForTest()
+  try {
+    const repo = createPlannerRepo(db)
+    const service = new PlannerService(repo)
+    const goal = service.createGoal({ title: '修改计划', acceptanceCriteria: '完成', deadline: '2026-11-30' })
+    const phase = repo.createPhase({ goalId: goal.id, title: '阶段', acceptanceCriteria: '完成阶段', seq: 1 })
+    const task = repo.createTask({ goalId: goal.id, phaseId: phase.id, title: '任务', estMinutes: 30, day: '2026-11-20', seq: 1 })
+    assert.equal(service.startModifyProposal('structure-session', goal.id, 'structure').stage, 'structure')
+    const proposal = service.startModifyProposal('estimate-session', goal.id, 'estimate')
+    const localId = proposal.candidate.phases[0]!.tasks[0]!.localId
+    const estimated = service.advanceEstimate('estimate-session', proposal.id, 0, { tasks: [{ taskLocalId: localId, estMinutes: 60 }] })
+    assert.equal(estimated.status, 'accepted')
+    const ready = service.advanceSchedule('estimate-session', proposal.id, 1, { tasks: [{ taskLocalId: localId, day: '2026-11-20' }], orderingConstraints: [] })
+    if (ready.status !== 'ready_for_preview') throw new Error('unexpected')
+    service.commitProposal(ready.previewToken, proposal.id, 2)
+    assert.equal(repo.getTask(task.id)?.estMinutes, 60)
+  } finally { db.close() }
+})
