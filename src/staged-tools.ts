@@ -117,6 +117,22 @@ export function createStagedPlannerTools(service: PlannerService) {
     },
   })
 
+  const planReplan = defineTool({
+    name: 'planner_plan_replan',
+    description: '原计划整体思路不再合理时重新规划。必须在完整结构中保留所有已完成阶段和任务的 source id 与原内容。',
+    parameters: { goal_id: { type: 'string', required: true } },
+    output,
+    async execute(args: Record<string, unknown>, exec: ToolRunContext) {
+      const session = owner(exec)
+      if (session === undefined) return { status: 'error', code: 'SESSION_REQUIRED' }
+      if (typeof args.goal_id !== 'string') return { status: 'error', code: 'GOAL_ID_REQUIRED' }
+      try {
+        const proposal = service.startReplanProposal(session, args.goal_id)
+        return { status: 'started', ...contextFor(proposal), next: '提交完整新结构，并原样保留所有 completed 内容及 source id' }
+      } catch (cause) { return error(cause) }
+    },
+  })
+
   const advance = defineTool({
     name: 'planner_proposal_advance',
     description: '提交 Proposal 当前阶段产物。structure 只含结构；estimate 只含 task_local_id/est_minutes；schedule 只含日期和 ordering constraints。',
@@ -207,5 +223,5 @@ export function createStagedPlannerTools(service: PlannerService) {
     },
   })
 
-  return [goalCreate, planCreate, planReschedule, planModify, advance, get, discard]
+  return [goalCreate, planCreate, planReschedule, planModify, planReplan, advance, get, discard]
 }
