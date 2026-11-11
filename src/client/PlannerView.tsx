@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { getDay, getMonth, patchTasks, putCapacity, type Capacity, type DayData, type MonthData, type PublicTask } from './api.js'
+import { getDay, getMonth, getProposalPreview, patchTasks, proposalAction, putCapacity, type Capacity, type DayData, type MonthData, type ProposalPreview, type PublicTask } from './api.js'
 import { addDays, dayLabel, loadColor, loadWidth, monthLabel, shiftMonth, todayStr, WEEKDAYS } from './format.js'
+import { proposalAccessFromUrl } from './proposal-model.js'
 
 const CARD: React.CSSProperties = {
   borderRadius: 12,
@@ -92,6 +93,9 @@ export function PlannerView(): React.ReactElement {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [editingCapacity, setEditingCapacity] = useState(false)
+  const [proposalAccess, setProposalAccess] = useState(() => proposalAccessFromUrl(window.location.search))
+  const [preview, setPreview] = useState<ProposalPreview | null>(null)
+  const [proposalBusy, setProposalBusy] = useState(false)
 
   const loadMonth = useCallback(async (target: string) => {
     try {
@@ -114,6 +118,12 @@ export function PlannerView(): React.ReactElement {
 
   useEffect(() => { void loadMonth(month) }, [month, loadMonth])
   useEffect(() => { void loadDay(selected) }, [selected, loadDay])
+  useEffect(() => {
+    if (proposalAccess === null) { setPreview(null); return }
+    void getProposalPreview(proposalAccess.proposalId, proposalAccess.token, proposalAccess.revision, month)
+      .then((value) => { setPreview(value); setError(null) })
+      .catch((loadError: unknown) => { setPreview(null); setError(message(loadError)) })
+  }, [month, proposalAccess])
 
   const refresh = useCallback(async () => {
     await Promise.all([loadMonth(month), loadDay(selected)])
@@ -170,6 +180,24 @@ export function PlannerView(): React.ReactElement {
   }, [refresh])
 
   const isEmpty = monthData !== null && monthData.goals.length === 0 && monthData.days.every((day) => day.count === 0)
+  const previewDays = useMemo(() => new Map(preview?.days.map((day) => [day.day, day]) ?? []), [preview])
+  const previewAdded = preview?.diff.added.filter((task) => task.day === selected) ?? []
+  const previewRemoved = preview?.diff.removed.filter((task) => task.day === selected) ?? []
+  const finishProposal = useCallback(async (action: 'commit' | 'continue' | 'discard') => {
+    if (proposalAccess === null) return
+    setProposalBusy(true)
+    try {
+      await proposalAction(action, proposalAccess.proposalId, proposalAccess.token, proposalAccess.revision)
+      setProposalAccess(null)
+      setPreview(null)
+      window.history.replaceState(null, '', window.location.pathname)
+      await refresh()
+    } catch (actionError) {
+      setError(message(actionError))
+    } finally {
+      setProposalBusy(false)
+    }
+  }, [proposalAccess, refresh])
 
   return (
     <div style={{ padding: '20px 24px 40px', display: 'flex', flexDirection: 'column', gap: 12, color: 'var(--dsw-alias-label-primary)' }}>
@@ -177,6 +205,18 @@ export function PlannerView(): React.ReactElement {
         <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 10, border: '1px solid var(--dsw-alias-state-error-primary)', color: 'var(--dsw-alias-state-error-primary)', fontSize: 12 }}>
           <span style={{ flex: 1 }}>{error}</span>
           <button type="button" style={BUTTON} onClick={() => setError(null)}>关闭</button>
+        </div>
+      )}
+
+      {preview !== null && (
+        <div style={{ ...CARD, padding: '10px 12px', borderColor: 'var(--dsw-alias-state-business-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ flex: 1, fontSize: 13 }}>
+            <strong>正在预览计划提案 · 尚未保存</strong>
+            <span style={{ marginLeft: 8, color: 'var(--dsw-alias-label-caption)' }}>新增 {preview.diff.summary.added} 项 · 删除 {preview.diff.summary.removed} 项 · 调整 {preview.diff.summary.changed} 项</span>
+          </div>
+          <button type="button" style={BUTTON} disabled={proposalBusy} onClick={() => { void finishProposal('commit') }}>确认计划</button>
+          <button type="button" style={BUTTON} disabled={proposalBusy} onClick={() => { void finishProposal('continue') }}>取消并继续修改</button>
+          <button type="button" style={BUTTON} disabled={proposalBusy} onClick={() => { void finishProposal('discard') }}>彻底放弃</button>
         </div>
       )}
 
@@ -223,6 +263,9 @@ export function PlannerView(): React.ReactElement {
           {monthData?.days.map((item) => {
             const isSelected = item.day === selected
             const isToday = item.day === today
+            const previewDay = previewDays.get(item.day)
+            const planned = previewDay?.planned ?? item.planned
+            const changeCount = (preview?.diff.added.filter((task) => task.day === item.day).length ?? 0) + (preview?.diff.removed.filter((task) => task.day === item.day).length ?? 0)
             return (
               <button
                 key={item.day}
@@ -246,10 +289,10 @@ export function PlannerView(): React.ReactElement {
                 <span style={{ fontSize: 12, color: isToday ? 'var(--dsw-alias-state-business-primary)' : 'var(--dsw-alias-label-secondary)', fontWeight: isToday ? 700 : 400 }}>
                   {Number(item.day.slice(8))}
                 </span>
-                {item.count > 0 && (
+                {(item.count > 0 || changeCount > 0) && (
                   <>
-                    <LoadBar planned={item.planned} limit={item.limit} />
-                    <span style={{ fontSize: 10, color: 'var(--dsw-alias-label-caption)' }}>{item.count} 项 · {item.planned}min</span>
+                    <LoadBar planned={planned} limit={previewDay?.limit ?? item.limit} />
+                    <span style={{ fontSize: 10, color: 'var(--dsw-alias-label-caption)' }}>{item.count + (preview?.diff.added.filter((task) => task.day === item.day).length ?? 0)} 项 · {planned}min</span>
                   </>
                 )}
               </button>
@@ -285,6 +328,8 @@ export function PlannerView(): React.ReactElement {
             ))}
           </div>
         )}
+        {previewRemoved.map((task) => <div key={`removed:${task.key}`} style={{ padding: '6px 0', color: '#b42318', textDecoration: 'line-through', fontSize: 13 }}>− {task.title} · {task.estMinutes}min</div>)}
+        {previewAdded.map((task) => <div key={`added:${task.key}`} style={{ padding: '6px 0', color: '#2f7d4a', fontSize: 13 }}>+ {task.title} · {task.estMinutes}min</div>)}
       </div>
 
       {monthData !== null && monthData.unscheduled.length > 0 && (
