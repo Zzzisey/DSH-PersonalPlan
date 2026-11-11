@@ -10,4 +10,5 @@ export interface JudgeConfig {
 export interface Config {
   dbPath?: string
   judge?: JudgeConfig
+  planningFlow?: 'legacy' | 'staged'
 }

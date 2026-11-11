@@ -16,7 +16,7 @@ import { createPlannerTools } from './tools.js'
 import type { Config } from './host/config.js'
 import { makeLegacyJudgeChat } from './host/legacy-llm.js'
 import { PlannerService } from './host/planner-service.js'
-import { registerDegradedPrompt, registerLegacyPlannerPrompt } from './host/prompt.js'
+import { registerDegradedPrompt, registerLegacyPlannerPrompt, registerStagedPlannerPrompt } from './host/prompt.js'
 
 const VERSION = '0.1.0'
 export const name = 'planner'
@@ -67,7 +67,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     })
 
   ctx.effect(() => {
-    const disposers = createPlannerTools(service).map((tool) => ctx.tools.register(tool))
+    const disposers = createPlannerTools(service, config.planningFlow ?? 'legacy').map((tool) => ctx.tools.register(tool))
     disposers.push(ctx.tools.register(defineTool({
       name: 'planner_ping',
       description: 'Personal Planner 的连通性探针：确认 Host 半区已激活，返回版本与 Host 时钟。不读写任务数据。',
@@ -81,7 +81,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     return () => { for (const dispose of disposers) dispose() }
   }, 'planner: tools')
 
-  registerLegacyPlannerPrompt(ctx)
+  if ((config.planningFlow ?? 'legacy') === 'staged') registerStagedPlannerPrompt(ctx)
+  else registerLegacyPlannerPrompt(ctx)
 
   ctx.effect(() => {
     const disposers = createPlannerRoutes(service).map((route) => ctx.webServer.register(route))

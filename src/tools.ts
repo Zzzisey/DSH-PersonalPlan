@@ -9,6 +9,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { addDays, todayInShanghai } from './core/validation/capacity.js'
 import type { DayLoad, DraftMode, GoalStatus, Priority, Task, TaskStatus } from './core/types.js'
 import { PlannerService, type LegacyDraftPayload, type LegacyDraftTask } from './host/planner-service.js'
+import { createStagedPlannerTools } from './staged-tools.js'
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const PRIORITIES: readonly Priority[] = ['P0', 'P1', 'P2']
@@ -104,7 +105,7 @@ function parseDraftTask(raw: unknown, at: string): LegacyDraftTask | string {
  * @param service - 唯一业务入口。
  * @returns 可直接交给 `ctx.tools.register` 的定义数组。
  */
-export function createPlannerTools(service: PlannerService) {
+function createLegacyPlannerTools(service: PlannerService) {
   const goalCreate = defineTool({
     name: 'planner_goal_create',
     description:
@@ -392,4 +393,8 @@ export function createPlannerTools(service: PlannerService) {
   })
 
   return [goalCreate, goalUpdate, planPropose, planCommit, taskQuery, taskUpdate, overview]
+}
+
+export function createPlannerTools(service: PlannerService, planningFlow: 'legacy' | 'staged' = 'legacy') {
+  return planningFlow === 'staged' ? createStagedPlannerTools(service) : createLegacyPlannerTools(service)
 }

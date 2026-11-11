@@ -11,9 +11,13 @@ export interface ToolHarness {
 }
 
 /** 直接调用 defineTool 产物，绕过 ToolRuntime，只用于锁定插件适配器的 legacy 行为。 */
-export function createToolHarness(db: DatabaseSync, options: PlannerServiceOptions = {}): ToolHarness {
+export function createToolHarness(
+  db: DatabaseSync,
+  options: PlannerServiceOptions = {},
+  planningFlow: 'legacy' | 'staged' = 'legacy',
+): ToolHarness {
   const service = new PlannerService(createPlannerRepo(db), options)
-  const definitions = createPlannerTools(service)
+  const definitions = createPlannerTools(service, planningFlow)
   const tool = (name: string): ToolDefinition => {
     const found = definitions.find((definition) => definition.name === name)
     if (found === undefined) throw new Error(`测试工具不存在：${name}`)

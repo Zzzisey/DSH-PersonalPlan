@@ -53,6 +53,24 @@ test('legacy Tool 名称、关键参数与字符串输出契约保持不变', ()
   }
 })
 
+test('staged 与 legacy tools 由配置互斥暴露', () => {
+  const db = openForTest()
+  try {
+    const staged = createToolHarness(db, {}, 'staged').definitions.map((tool) => tool.name)
+    assert.deepEqual(staged, [
+      'planner_goal_create',
+      'planner_plan_create',
+      'planner_proposal_advance',
+      'planner_proposal_get',
+      'planner_proposal_discard',
+    ])
+    assert.equal(staged.includes('planner_plan_propose'), false)
+    assert.equal(staged.includes('planner_plan_commit'), false)
+  } finally {
+    db.close()
+  }
+})
+
 test('goal create / update 持久化现有字段并拒绝非法输入', async () => {
   const db = openForTest()
   try {
