@@ -67,7 +67,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     })
 
   ctx.effect(() => {
-    const disposers = createPlannerTools(service, config.planningFlow ?? 'legacy').map((tool) => ctx.tools.register(tool))
+    const disposers = createPlannerTools(service, config.planningFlow ?? 'staged').map((tool) => ctx.tools.register(tool))
     disposers.push(ctx.tools.register(defineTool({
       name: 'planner_ping',
       description: 'Personal Planner 的连通性探针：确认 Host 半区已激活，返回版本与 Host 时钟。不读写任务数据。',
@@ -81,7 +81,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     return () => { for (const dispose of disposers) dispose() }
   }, 'planner: tools')
 
-  if ((config.planningFlow ?? 'legacy') === 'staged') registerStagedPlannerPrompt(ctx)
+  if ((config.planningFlow ?? 'staged') === 'staged') registerStagedPlannerPrompt(ctx)
   else registerLegacyPlannerPrompt(ctx)
 
   ctx.effect(() => {

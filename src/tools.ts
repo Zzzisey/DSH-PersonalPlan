@@ -395,6 +395,6 @@ function createLegacyPlannerTools(service: PlannerService) {
   return [goalCreate, goalUpdate, planPropose, planCommit, taskQuery, taskUpdate, overview]
 }
 
-export function createPlannerTools(service: PlannerService, planningFlow: 'legacy' | 'staged' = 'legacy') {
+export function createPlannerTools(service: PlannerService, planningFlow: 'legacy' | 'staged' = 'staged') {
   return planningFlow === 'staged' ? createStagedPlannerTools(service) : createLegacyPlannerTools(service)
 }

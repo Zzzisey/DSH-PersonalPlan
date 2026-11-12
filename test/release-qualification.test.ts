@@ -14,11 +14,13 @@ test('release tool selection keeps staged and legacy mutually exclusive', () => 
   try {
     const service = new PlannerService(createPlannerRepo(db))
     const staged = createPlannerTools(service, 'staged').map((tool) => tool.name)
+    const defaults = createPlannerTools(service).map((tool) => tool.name)
     const legacy = createPlannerTools(service, 'legacy').map((tool) => tool.name)
     assert.deepEqual(staged.filter((name) => name.startsWith('planner_plan_')), [
       'planner_plan_create', 'planner_plan_reschedule', 'planner_plan_modify', 'planner_plan_replan',
     ])
     assert.equal(staged.includes('planner_plan_propose'), false)
+    assert.deepEqual(defaults, staged)
     assert.equal(legacy.includes('planner_plan_propose'), true)
     assert.equal(legacy.includes('planner_plan_create'), false)
   } finally { db.close() }
