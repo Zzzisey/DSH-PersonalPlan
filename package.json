@@ -12,8 +12,12 @@
   },
   "files": ["dist", "cordis.patch.yml", "locale/*.json", "icon.svg"],
   "scripts": {
+    "generate-build-info": "node scripts/generate-build-info.mjs",
+    "prebuild": "npm run generate-build-info",
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
+    "precheck": "npm run generate-build-info",
     "check": "tsc -p tsconfig.json --noEmit",
+    "pretest": "npm run generate-build-info",
     "test": "node --experimental-strip-types --import ./test/helpers/registerTypeScriptLoader.mjs --test test/*.test.ts"
   },
   "dsh": {

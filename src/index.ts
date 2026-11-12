@@ -17,8 +17,8 @@ import type { Config } from './host/config.js'
 import { makeLegacyJudgeChat } from './host/legacy-llm.js'
 import { PlannerService } from './host/planner-service.js'
 import { registerDegradedPrompt, registerLegacyPlannerPrompt, registerStagedPlannerPrompt } from './host/prompt.js'
+import { BUILD_ID, BUILD_REVISION, BUILD_VERSION } from './generated/build-info.js'
 
-const VERSION = '0.2.0'
 export const name = 'planner'
 export type { Config, JudgeConfig } from './host/config.js'
 
@@ -29,8 +29,8 @@ export type { Config, JudgeConfig } from './host/config.js'
 export const inject = ['tools', 'webServer', 'systemPrompt']
 
 /** ping 的响应体；Client 徽章也读同一份。 */
-function ping(): { ok: boolean; version: string; at: string } {
-  return { ok: true, version: VERSION, at: new Date().toISOString() }
+function ping(): { ok: boolean; version: string; revision: string; build: string; at: string } {
+  return { ok: true, version: BUILD_VERSION, revision: BUILD_REVISION, build: BUILD_ID, at: new Date().toISOString() }
 }
 
 /**
@@ -75,7 +75,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       output: { schema: { type: 'string' }, render: (_args: unknown, value: string) => [{ type: 'text', text: value }] },
       execute() {
         const current = ping()
-        return Promise.resolve(`personal-planner ${current.version} is live · host clock ${current.at}`)
+        return Promise.resolve(`personal-planner ${current.build} is live · host clock ${current.at}`)
       },
     })))
     return () => { for (const dispose of disposers) dispose() }

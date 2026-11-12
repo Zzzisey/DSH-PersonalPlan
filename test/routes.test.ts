@@ -6,6 +6,7 @@ import {
 } from './helpers/repoHarness.ts'
 import { createRouteHarness } from './helpers/routeHarness.ts'
 import { PlannerService } from '../src/host/planner-service.ts'
+import { BUILD_ID, BUILD_VERSION } from '../src/generated/build-info.ts'
 
 test('month / day 路由返回 legacy 日历口径', async () => {
   const db = openForTest()
@@ -45,6 +46,22 @@ test('month / day 路由返回 legacy 日历口径', async () => {
     const invalid = await server.request({ path: '/personal-planner/api/day?day=11-10-2026' })
     assert.equal(invalid.status, 400)
     assert.deepEqual(invalid.body, { ok: false, error: '需要 day=YYYY-MM-DD' })
+  } finally {
+    await server.close()
+    db.close()
+  }
+})
+
+test('ping returns the generated package version and git build id', async () => {
+  const db = openForTest()
+  const server = await createRouteHarness(db)
+  try {
+    const response = await server.request({ path: '/personal-planner/api/ping' })
+    assert.equal(response.status, 200)
+    const body = response.body as { version: string; build: string }
+    assert.equal(body.version, BUILD_VERSION)
+    assert.equal(body.build, BUILD_ID)
+    assert.match(body.build, /^0\.2\.0\+[0-9a-f]{8}(?:\.dirty)?$/)
   } finally {
     await server.close()
     db.close()

@@ -17,3 +17,6 @@ Thumbs.db
 
 # 私有设计文档仅保留在本地，不推送到公开仓库
 docs/
+
+# test/check/build 前自动生成的构建标识
+src/generated/build-info.ts

@@ -9,10 +9,10 @@ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { todayInShanghai } from '../core/validation/capacity.js'
 import type { CapacityRules, Task, TaskStatus } from '../core/types.js'
 import { PlannerService } from '../host/planner-service.js'
+import { BUILD_ID, BUILD_REVISION, BUILD_VERSION } from '../generated/build-info.js'
 import { isLoopbackRequest, readJsonBody, writeJson } from './http.js'
 
 const ROUTE = '/personal-planner'
-const VERSION = '0.1.0'
 const MAX_UPDATES = 20
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const MONTH_RE = /^\d{4}-\d{2}$/
@@ -41,8 +41,8 @@ function publicTask(task: Task): PublicTask {
   }
 }
 
-function ping(): { ok: boolean; version: string; at: string } {
-  return { ok: true, version: VERSION, at: new Date().toISOString() }
+function ping(): { ok: boolean; version: string; revision: string; build: string; at: string } {
+  return { ok: true, version: BUILD_VERSION, revision: BUILD_REVISION, build: BUILD_ID, at: new Date().toISOString() }
 }
 
 function monthOf(url: URL): string {
