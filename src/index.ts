@@ -18,7 +18,7 @@ import { makeLegacyJudgeChat } from './host/legacy-llm.js'
 import { PlannerService } from './host/planner-service.js'
 import { registerDegradedPrompt, registerLegacyPlannerPrompt, registerStagedPlannerPrompt } from './host/prompt.js'
 
-const VERSION = '0.1.0'
+const VERSION = '0.2.0'
 export const name = 'planner'
 export type { Config, JudgeConfig } from './host/config.js'
 

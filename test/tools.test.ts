@@ -53,7 +53,7 @@ test('legacy Tool 名称、关键参数与字符串输出契约保持不变', ()
   }
 })
 
-test('staged 与 legacy tools 由配置互斥暴露', () => {
+test('staged 与 legacy 规划工具互斥，共享工具在 staged 下可读写正式任务', async () => {
   const db = openForTest()
   try {
     const staged = createToolHarness(db, {}, 'staged').definitions.map((tool) => tool.name)
@@ -66,9 +66,21 @@ test('staged 与 legacy tools 由配置互斥暴露', () => {
       'planner_proposal_advance',
       'planner_proposal_get',
       'planner_proposal_discard',
+      'planner_goal_update',
+      'planner_task_query',
+      'planner_task_update',
+      'planner_plan_overview',
     ])
     assert.equal(staged.includes('planner_plan_propose'), false)
     assert.equal(staged.includes('planner_plan_commit'), false)
+    assert.equal(staged.includes('planner_task_query'), true)
+    const repo = createPlannerRepo(db)
+    const goal = repo.createGoal({ title: '共享查询' })
+    const task = repo.createTask({ goalId: goal.id, title: '可访问任务', day: todayInShanghai(), estMinutes: 30 })
+    const harness = createToolHarness(db, {}, 'staged')
+    assert.match(text(await harness.run('planner_task_query', {})), /可访问任务/)
+    assert.match(text(await harness.run('planner_task_update', { updates: [{ id: task.id, status: 'done' }] })), /已更新/)
+    assert.equal(repo.getTask(task.id)?.status, 'done')
   } finally {
     db.close()
   }
@@ -96,12 +108,13 @@ test('goal create / update 持久化现有字段并拒绝非法输入', async ()
       title: '发布作品集',
       status: 'done',
       deadline: '',
+      acceptance_criteria: '公开链接可访问',
     }))
     assert.match(updated, /任务未做任何改动/)
-    const stored = db.prepare('select title,deadline,status from goal where id = ?').get(goal.id) as {
-      title: string; deadline: string | null; status: string
+    const stored = db.prepare('select title,deadline,status,acceptance_criteria as acceptanceCriteria from goal where id = ?').get(goal.id) as {
+      title: string; deadline: string | null; status: string; acceptanceCriteria: string
     }
-    assert.deepEqual({ ...stored }, { title: '发布作品集', deadline: null, status: 'done' })
+    assert.deepEqual({ ...stored }, { title: '发布作品集', deadline: null, status: 'done', acceptanceCriteria: '公开链接可访问' })
 
     assert.match(text(await harness.run('planner_goal_create', { title: '坏日期', deadline: '12/31' })), /^错误：/)
     assert.match(text(await harness.run('planner_goal_update', { goal_id: goal.id })), /^错误：/)

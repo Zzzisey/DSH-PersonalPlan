@@ -9,20 +9,24 @@ import { PlannerService } from '../src/host/planner-service.ts'
 import { createPlannerTools } from '../src/tools.ts'
 import { createV2MigrationInputCopy } from './helpers/schemaFixtures.ts'
 
-test('release tool selection keeps staged and legacy mutually exclusive', () => {
+test('release tool selection keeps planning workflows exclusive and formal-data tools shared', () => {
   const db = openPlannerDb({ dbPath: ':memory:' })
   try {
     const service = new PlannerService(createPlannerRepo(db))
     const staged = createPlannerTools(service, 'staged').map((tool) => tool.name)
     const defaults = createPlannerTools(service).map((tool) => tool.name)
     const legacy = createPlannerTools(service, 'legacy').map((tool) => tool.name)
-    assert.deepEqual(staged.filter((name) => name.startsWith('planner_plan_')), [
+    assert.deepEqual(staged.filter((name) => ['planner_plan_create', 'planner_plan_reschedule', 'planner_plan_modify', 'planner_plan_replan'].includes(name)), [
       'planner_plan_create', 'planner_plan_reschedule', 'planner_plan_modify', 'planner_plan_replan',
     ])
     assert.equal(staged.includes('planner_plan_propose'), false)
     assert.deepEqual(defaults, staged)
     assert.equal(legacy.includes('planner_plan_propose'), true)
     assert.equal(legacy.includes('planner_plan_create'), false)
+    for (const name of ['planner_goal_update', 'planner_task_query', 'planner_task_update', 'planner_plan_overview']) {
+      assert.equal(staged.includes(name), true)
+      assert.equal(legacy.includes(name), true)
+    }
   } finally { db.close() }
 })
 
