@@ -84,7 +84,7 @@ test('proposal preview API authenticates by token and commits the exact revision
     const ready = service.advanceSchedule('route-session', started.id, 2, { tasks: [{ taskLocalId: taskId, day: '2026-11-20' }], orderingConstraints: [] })
     assert.equal(ready.status, 'ready_for_preview')
     if (ready.status !== 'ready_for_preview') return
-    const query = `/personal-planner/api/proposal/preview?proposal=${encodeURIComponent(started.id)}&revision=3&month=2026-11&token=${encodeURIComponent(ready.previewToken)}`
+    const query = `/personal-planner/api/proposal/preview?proposal=${encodeURIComponent(started.id)}&month=2026-11&token=${encodeURIComponent(ready.previewToken)}`
     const preview = await server.request({ path: query })
     assert.equal(preview.status, 200)
     const committed = await server.request({ method: 'POST', path: '/personal-planner/api/proposal/commit', body: { proposalId: started.id, revision: 3, token: ready.previewToken } })

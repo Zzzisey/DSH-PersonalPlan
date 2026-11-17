@@ -124,16 +124,23 @@ export function PlannerView({ useProjection }: { useProjection: (key: 'plannerPr
   useEffect(() => { void loadDay(selected) }, [selected, loadDay])
   useEffect(() => {
     if (proposalAccess === null) { setPreview(null); return }
-    void getProposalPreview(proposalAccess.proposalId, proposalAccess.token, proposalAccess.revision, month)
-      .then((value) => { setPreview(value); setError(null) })
+    let active = true
+    void getProposalPreview(proposalAccess.proposalId, proposalAccess.token, month)
+      .then((value) => {
+        if (!active) return
+        setPreview(value)
+        setError(null)
+      })
       .catch((loadError: unknown) => {
+        if (!active) return
         setPreview(null)
         const reason = message(loadError)
         setError(reason)
-        if (/^PROPOSAL_(?:NOT_READY|REVISION_CONFLICT|TOKEN_INVALID|STALE)$/.test(reason)) {
+        if (/^PROPOSAL_(?:NOT_READY|TOKEN_INVALID|STALE)$/.test(reason)) {
           setDismissedAccess(proposalAccessKey(proposalAccess))
         }
       })
+    return () => { active = false }
   }, [month, proposalAccess])
 
   const refresh = useCallback(async () => {
@@ -195,19 +202,31 @@ export function PlannerView({ useProjection }: { useProjection: (key: 'plannerPr
   const previewAdded = preview?.diff.added.filter((task) => task.day === selected) ?? []
   const previewRemoved = preview?.diff.removed.filter((task) => task.day === selected) ?? []
   const finishProposal = useCallback(async (action: 'commit' | 'continue' | 'discard') => {
-    if (proposalAccess === null) return
+    if (proposalAccess === null || preview === null) return
     setProposalBusy(true)
     try {
-      await proposalAction(action, proposalAccess.proposalId, proposalAccess.token, proposalAccess.revision)
+      await proposalAction(action, proposalAccess.proposalId, proposalAccess.token, preview.proposal.revision)
       setDismissedAccess(proposalAccessKey(proposalAccess))
       setPreview(null)
       await refresh()
     } catch (actionError) {
-      setError(message(actionError))
+      const reason = message(actionError)
+      if (reason !== 'PROPOSAL_REVISION_CONFLICT') {
+        setError(reason)
+      } else {
+        try {
+          setPreview(await getProposalPreview(proposalAccess.proposalId, proposalAccess.token, month))
+          setError('提案已更新，请检查最新预览后重新确认。')
+        } catch (reloadError) {
+          setPreview(null)
+          setDismissedAccess(proposalAccessKey(proposalAccess))
+          setError(message(reloadError))
+        }
+      }
     } finally {
       setProposalBusy(false)
     }
-  }, [proposalAccess, refresh])
+  }, [month, preview, proposalAccess, refresh])
 
   return (
     <div style={{ padding: '20px 24px 40px', display: 'flex', flexDirection: 'column', gap: 12, color: 'var(--dsw-alias-label-primary)' }}>

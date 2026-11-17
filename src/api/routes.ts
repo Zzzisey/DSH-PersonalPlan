@@ -55,13 +55,12 @@ function dayOf(url: URL): string | undefined {
   return raw !== null && DATE_RE.test(raw) ? raw : undefined
 }
 
-function proposalQuery(url: URL): { proposalId: string; token: string; revision: number } | undefined {
+function proposalQuery(url: URL): { proposalId: string; token: string } | undefined {
   const proposalId = url.searchParams.get('proposal')
   const token = url.searchParams.get('token')
-  const revision = Number(url.searchParams.get('revision'))
-  return proposalId === null || proposalId === '' || token === null || token === '' || !Number.isInteger(revision) || revision < 0
+  return proposalId === null || proposalId === '' || token === null || token === ''
     ? undefined
-    : { proposalId, token, revision }
+    : { proposalId, token }
 }
 
 async function proposalAction(service: PlannerService, action: 'commit' | 'continue' | 'discard', req: Parameters<WebRoute['handler']>[0], res: Parameters<WebRoute['handler']>[1]): Promise<void> {
@@ -206,10 +205,10 @@ export function createPlannerRoutes(service: PlannerService): WebRoute[] {
         if (req.method === 'GET' && path === `${ROUTE}/api/proposal/preview`) {
           const query = proposalQuery(url)
           if (query === undefined) {
-            writeJson(res, 400, { ok: false, error: 'proposal、token、revision 必填' })
+            writeJson(res, 400, { ok: false, error: 'proposal、token 必填' })
             return
           }
-          writeJson(res, 200, { ok: true, ...service.queryProposalPreview(query.token, query.proposalId, query.revision, monthOf(url)) })
+          writeJson(res, 200, { ok: true, ...service.queryProposalPreview(query.token, query.proposalId, monthOf(url)) })
           return
         }
         if (req.method === 'POST' && path === `${ROUTE}/api/proposal/commit`) {

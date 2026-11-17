@@ -203,7 +203,7 @@ export function createStagedPlannerTools(service: PlannerService) {
             ? {
                 status: result.status,
                 proposal: ref(result.proposal),
-                proposalPreview: { proposalId: result.proposal.id, revision: result.proposal.revision, token: result.previewToken },
+                proposalPreview: { proposalId: result.proposal.id, token: result.previewToken },
                 next: '在 DSH 客户端选择“计划”标签查看预览并确认。',
               }
             : result.status === 'revise_required'
@@ -230,7 +230,7 @@ export function createStagedPlannerTools(service: PlannerService) {
           ...contextFor(proposal),
           ...(proposal.stage === 'ready'
             ? {
-                proposalPreview: { proposalId: proposal.id, revision: proposal.revision, token: service.issuePreviewToken(proposal) },
+                proposalPreview: { proposalId: proposal.id, token: service.issuePreviewToken(proposal) },
                 next: '在 DSH 客户端选择“计划”标签查看预览并确认。',
               }
             : {}),

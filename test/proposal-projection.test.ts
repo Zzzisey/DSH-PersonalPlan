@@ -34,9 +34,9 @@ test('Proposal 预览只从当前会话中配对的 Planner 工具结果投影',
   }))
   state = definition.apply(state, result('call-ready', {
     status: 'ready_for_preview',
-    proposalPreview: { proposalId: 'p1', revision: 3, token: 'signed-token' },
+    proposalPreview: { proposalId: 'p1', token: 'signed-token' },
   }))
-  assert.deepEqual(definition.wire.view(state), { proposalId: 'p1', revision: 3, token: 'signed-token' })
+  assert.deepEqual(definition.wire.view(state), { proposalId: 'p1', token: 'signed-token' })
 
   state = definition.apply(state, result('unpaired', { proposalPreview: null }))
   assert.notEqual(definition.wire.view(state), null)
@@ -44,6 +44,16 @@ test('Proposal 预览只从当前会话中配对的 Planner 工具结果投影',
   state = definition.apply(state, event('tool/call', {
     turn: 1,
     step: 2,
+    callId: 'call-editing',
+    name: 'planner_proposal_advance',
+    arguments: '{}',
+  }))
+  state = definition.apply(state, result('call-editing', { status: 'accepted' }))
+  assert.equal(definition.wire.view(state), null)
+
+  state = definition.apply(state, event('tool/call', {
+    turn: 1,
+    step: 3,
     callId: 'call-discard',
     name: 'planner_proposal_discard',
     arguments: '{}',

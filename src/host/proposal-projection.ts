@@ -5,7 +5,6 @@ import { z } from 'zod'
 export interface ProposalAccess {
   proposalId: string
   token: string
-  revision: number
 }
 
 interface ProposalProjectionState {
@@ -26,7 +25,6 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
 const accessSchema = z.object({
   proposalId: z.string().min(1),
   token: z.string().min(1),
-  revision: z.number().int().nonnegative(),
 }).strict()
 
 const stateSchema = z.object({
@@ -35,6 +33,10 @@ const stateSchema = z.object({
 }).strict()
 
 const TRACKED_TOOLS = new Set([
+  'planner_plan_create',
+  'planner_plan_reschedule',
+  'planner_plan_modify',
+  'planner_plan_replan',
   'planner_proposal_advance',
   'planner_proposal_get',
   'planner_proposal_discard',
@@ -45,7 +47,10 @@ function projectedAccess(event: Extract<SessionEvent, { type: 'tool/result' }>):
   if (text === undefined) return undefined
   try {
     const value: unknown = JSON.parse(text)
-    if (typeof value !== 'object' || value === null || !Object.hasOwn(value, 'proposalPreview')) return undefined
+    if (typeof value !== 'object' || value === null) return undefined
+    if (!Object.hasOwn(value, 'proposalPreview')) {
+      return 'status' in value && value.status !== 'error' ? null : undefined
+    }
     const preview = (value as { proposalPreview?: unknown }).proposalPreview
     if (preview === null) return null
     const parsed = accessSchema.safeParse(preview)
@@ -58,7 +63,7 @@ function projectedAccess(event: Extract<SessionEvent, { type: 'tool/result' }>):
 /** Proposal 预览在当前会话中的唯一激活来源。 */
 export const proposalProjectionDefinition = {
   key: 'plannerProposal',
-  stateVersion: 1,
+  stateVersion: 2,
   stateSchema,
   init: () => ({ active: null, pendingCalls: {} }),
   apply(state, event) {
