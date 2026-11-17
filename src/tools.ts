@@ -145,6 +145,7 @@ function createLegacyPlannerTools(service: PlannerService) {
       title: { type: 'string', description: '新标题' },
       motivation: { type: 'string', description: '新的动机说明' },
       deadline: { type: 'string', description: '新截止日期 YYYY-MM-DD；传空串表示清除截止' },
+      acceptance_criteria: { type: 'string', description: '验收标准，trim 后 1–1000 字；staged 规划必需' },
     },
     output: { schema: { type: 'string' }, render: (_args: unknown, value: string) => [{ type: 'text', text: value }] },
     async execute(args: Record<string, unknown>) {
@@ -164,9 +165,13 @@ function createLegacyPlannerTools(service: PlannerService) {
       }
       const title = str(args.title)
       const motivation = args.motivation === undefined ? undefined : str(args.motivation) ?? ''
+      const acceptanceCriteria = args.acceptance_criteria === undefined ? undefined : str(args.acceptance_criteria)
+      if (args.acceptance_criteria !== undefined && (acceptanceCriteria === undefined || acceptanceCriteria.length > 1000)) {
+        return bad('acceptance_criteria 必须是 trim 后 1–1000 字')
+      }
 
-      if (statusRaw === undefined && title === undefined && motivation === undefined && deadline === undefined) {
-        return bad('至少提供一个要改的字段：status / title / motivation / deadline')
+      if (statusRaw === undefined && title === undefined && motivation === undefined && deadline === undefined && acceptanceCriteria === undefined) {
+        return bad('至少提供一个要改的字段：status / title / motivation / deadline / acceptance_criteria')
       }
 
       const updated = service.updateGoal(goalId, {
@@ -174,6 +179,7 @@ function createLegacyPlannerTools(service: PlannerService) {
         ...(title === undefined ? {} : { title }),
         ...(motivation === undefined ? {} : { motivation }),
         ...(deadline === undefined ? {} : { deadline }),
+        ...(acceptanceCriteria === undefined ? {} : { acceptanceCriteria }),
       })
       if (updated === undefined) return bad(`目标 ${goalId} 不存在`)
       const changes = [
@@ -181,6 +187,7 @@ function createLegacyPlannerTools(service: PlannerService) {
         title === undefined ? '' : `标题「${updated.title}」`,
         motivation === undefined ? '' : '动机已更新',
         deadline === undefined ? '' : (updated.deadline === null ? '截止日期已清除' : `截止 ${updated.deadline}`),
+        acceptanceCriteria === undefined ? '' : '验收标准已更新',
       ].filter((part) => part !== '').join('；')
       return `已更新目标「${updated.title}」（${updated.id}）：${changes}。任务未做任何改动。`
     },
@@ -395,6 +402,9 @@ function createLegacyPlannerTools(service: PlannerService) {
   return [goalCreate, goalUpdate, planPropose, planCommit, taskQuery, taskUpdate, overview]
 }
 
-export function createPlannerTools(service: PlannerService, planningFlow: 'legacy' | 'staged' = 'legacy') {
-  return planningFlow === 'staged' ? createStagedPlannerTools(service) : createLegacyPlannerTools(service)
+export function createPlannerTools(service: PlannerService, planningFlow: 'legacy' | 'staged' = 'staged') {
+  if (planningFlow === 'legacy') return createLegacyPlannerTools(service)
+  const sharedNames = new Set(['planner_goal_update', 'planner_task_query', 'planner_task_update', 'planner_plan_overview'])
+  const shared = createLegacyPlannerTools(service).filter((tool) => sharedNames.has(tool.name))
+  return [...createStagedPlannerTools(service), ...shared]
 }

@@ -111,8 +111,8 @@ export function putCapacity(capacity: Capacity): Promise<{ ok: true; capacity: C
   })
 }
 
-export function getProposalPreview(proposalId: string, token: string, revision: number, month: string): Promise<ProposalPreview> {
-  return request<ProposalPreview>(`/proposal/preview?proposal=${encodeURIComponent(proposalId)}&token=${encodeURIComponent(token)}&revision=${revision}&month=${encodeURIComponent(month)}`)
+export function getProposalPreview(proposalId: string, token: string, month: string): Promise<ProposalPreview> {
+  return request<ProposalPreview>(`/proposal/preview?proposal=${encodeURIComponent(proposalId)}&token=${encodeURIComponent(token)}&month=${encodeURIComponent(month)}`)
 }
 
 export function proposalAction(action: 'commit' | 'continue' | 'discard', proposalId: string, token: string, revision: number): Promise<{ ok: true }> {

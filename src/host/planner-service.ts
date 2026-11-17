@@ -427,9 +427,9 @@ export class PlannerService {
     return value.ownerSessionId
   }
 
-  queryProposalPreview(token: string, proposalId: string, expectedRevision: number, month: string): ProposalPreview {
+  queryProposalPreview(token: string, proposalId: string, month: string): ProposalPreview {
     const owner = this.ownerFromPreviewToken(token, proposalId)
-    const proposal = this.proposalForOwner(proposalId, owner, expectedRevision)
+    const proposal = this.proposalForOwner(proposalId, owner)
     if (proposal.stage !== 'ready' || proposal.status !== 'awaiting_confirmation') throw new Error('PROPOSAL_NOT_READY')
     const grid = monthGrid(month)
     const from = grid[0]!

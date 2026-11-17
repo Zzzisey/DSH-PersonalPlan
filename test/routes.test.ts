@@ -6,6 +6,7 @@ import {
 } from './helpers/repoHarness.ts'
 import { createRouteHarness } from './helpers/routeHarness.ts'
 import { PlannerService } from '../src/host/planner-service.ts'
+import { BUILD_ID, BUILD_VERSION } from '../src/generated/build-info.ts'
 
 test('month / day 路由返回 legacy 日历口径', async () => {
   const db = openForTest()
@@ -51,6 +52,22 @@ test('month / day 路由返回 legacy 日历口径', async () => {
   }
 })
 
+test('ping returns the generated package version and git build id', async () => {
+  const db = openForTest()
+  const server = await createRouteHarness(db)
+  try {
+    const response = await server.request({ path: '/personal-planner/api/ping' })
+    assert.equal(response.status, 200)
+    const body = response.body as { version: string; build: string }
+    assert.equal(body.version, BUILD_VERSION)
+    assert.equal(body.build, BUILD_ID)
+    assert.match(body.build, /^0\.2\.0\+[0-9a-f]{8}(?:\.dirty)?$/)
+  } finally {
+    await server.close()
+    db.close()
+  }
+})
+
 test('proposal preview API authenticates by token and commits the exact revision', async () => {
   const db = openForTest()
   const repo = createPlannerRepo(db)
@@ -67,7 +84,7 @@ test('proposal preview API authenticates by token and commits the exact revision
     const ready = service.advanceSchedule('route-session', started.id, 2, { tasks: [{ taskLocalId: taskId, day: '2026-11-20' }], orderingConstraints: [] })
     assert.equal(ready.status, 'ready_for_preview')
     if (ready.status !== 'ready_for_preview') return
-    const query = `/personal-planner/api/proposal/preview?proposal=${encodeURIComponent(started.id)}&revision=3&month=2026-11&token=${encodeURIComponent(ready.previewToken)}`
+    const query = `/personal-planner/api/proposal/preview?proposal=${encodeURIComponent(started.id)}&month=2026-11&token=${encodeURIComponent(ready.previewToken)}`
     const preview = await server.request({ path: query })
     assert.equal(preview.status, 200)
     const committed = await server.request({ method: 'POST', path: '/personal-planner/api/proposal/commit', body: { proposalId: started.id, revision: 3, token: ready.previewToken } })

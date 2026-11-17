@@ -75,7 +75,7 @@ test('ready preview and commit stay consistent and stale goal changes are reject
     }
     const goal = service.createGoal({ title: '交付项目', acceptanceCriteria: '客户验收', deadline: '2026-11-30' })
     const first = ready(goal.id)
-    const preview = service.queryProposalPreview(first.previewToken, first.proposal.id, 3, '2026-11')
+    const preview = service.queryProposalPreview(first.previewToken, first.proposal.id, '2026-11')
     assert.deepEqual(preview.diff.summary, { added: 1, removed: 0, changed: 0 })
     assert.equal(preview.diff.added[0]?.title, '完成交付物')
     assert.deepEqual(service.commitProposal(first.previewToken, first.proposal.id, 3), { phases: 1, tasks: 1, scheduleVersion: 2 })
@@ -136,8 +136,18 @@ test('reschedule starts at schedule and only changes candidate task days', () =>
     assert.equal(repo.getTask(task.id)?.day, '2026-11-20')
     assert.equal(ready.proposal.candidate.phases[0]!.tasks[0]!.day, '2026-11-21')
     if (ready.status !== 'ready_for_preview') return
-    service.commitProposal(ready.previewToken, proposal.id, 1)
-    assert.equal(repo.getTask(task.id)?.day, '2026-11-21')
+    const reopened = service.continueProposal('session-a', proposal.id, 1)
+    const latest = service.advanceSchedule('session-a', proposal.id, reopened.revision, {
+      tasks: [{ taskLocalId: localId, day: '2026-11-22' }], orderingConstraints: [],
+    })
+    assert.equal(latest.status, 'ready_for_preview')
+    if (latest.status !== 'ready_for_preview') return
+
+    // 面板可用旧的会话投影 token 重新进入，但预览必须读取数据库中的最新 revision。
+    const preview = service.queryProposalPreview(ready.previewToken, proposal.id, '2026-11')
+    assert.equal(preview.proposal.revision, latest.proposal.revision)
+    service.commitProposal(ready.previewToken, proposal.id, preview.proposal.revision)
+    assert.equal(repo.getTask(task.id)?.day, '2026-11-22')
   } finally { db.close() }
 })
 

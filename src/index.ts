@@ -7,6 +7,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import type {} from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createPlannerRoutes } from './api/routes.js'
@@ -16,9 +17,10 @@ import { createPlannerTools } from './tools.js'
 import type { Config } from './host/config.js'
 import { makeLegacyJudgeChat } from './host/legacy-llm.js'
 import { PlannerService } from './host/planner-service.js'
+import { proposalProjectionDefinition } from './host/proposal-projection.js'
 import { registerDegradedPrompt, registerLegacyPlannerPrompt, registerStagedPlannerPrompt } from './host/prompt.js'
+import { BUILD_ID, BUILD_REVISION, BUILD_VERSION } from './generated/build-info.js'
 
-const VERSION = '0.1.0'
 export const name = 'planner'
 export type { Config, JudgeConfig } from './host/config.js'
 
@@ -26,11 +28,11 @@ export type { Config, JudgeConfig } from './host/config.js'
  * 必需依赖。`systemPrompt` 用于降级告警——库坏了也要让用户在对话里看到原因。
  * 可选能力（将来如 `skills`）一律用 ctx.get 软探测，绝不写进这里。
  */
-export const inject = ['tools', 'webServer', 'systemPrompt']
+export const inject = ['tools', 'webServer', 'systemPrompt', 'sessionProjections']
 
 /** ping 的响应体；Client 徽章也读同一份。 */
-function ping(): { ok: boolean; version: string; at: string } {
-  return { ok: true, version: VERSION, at: new Date().toISOString() }
+function ping(): { ok: boolean; version: string; revision: string; build: string; at: string } {
+  return { ok: true, version: BUILD_VERSION, revision: BUILD_REVISION, build: BUILD_ID, at: new Date().toISOString() }
 }
 
 /**
@@ -46,6 +48,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     registerDegradedPrompt(ctx, error)
     return
   }
+
+  ctx.sessionProjections.register(proposalProjectionDefinition)
 
   // 先登记关库：cordis 按注册逆序释放，所以它会最后执行，避免工具还在用时连接已关。
   ctx.effect(() => () => { db.close() }, 'planner: db')
@@ -67,7 +71,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     })
 
   ctx.effect(() => {
-    const disposers = createPlannerTools(service, config.planningFlow ?? 'legacy').map((tool) => ctx.tools.register(tool))
+    const disposers = createPlannerTools(service, config.planningFlow ?? 'staged').map((tool) => ctx.tools.register(tool))
     disposers.push(ctx.tools.register(defineTool({
       name: 'planner_ping',
       description: 'Personal Planner 的连通性探针：确认 Host 半区已激活，返回版本与 Host 时钟。不读写任务数据。',
@@ -75,13 +79,13 @@ export function apply(ctx: Context, config: Config = {}): void {
       output: { schema: { type: 'string' }, render: (_args: unknown, value: string) => [{ type: 'text', text: value }] },
       execute() {
         const current = ping()
-        return Promise.resolve(`personal-planner ${current.version} is live · host clock ${current.at}`)
+        return Promise.resolve(`personal-planner ${current.build} is live · host clock ${current.at}`)
       },
     })))
     return () => { for (const dispose of disposers) dispose() }
   }, 'planner: tools')
 
-  if ((config.planningFlow ?? 'legacy') === 'staged') registerStagedPlannerPrompt(ctx)
+  if ((config.planningFlow ?? 'staged') === 'staged') registerStagedPlannerPrompt(ctx)
   else registerLegacyPlannerPrompt(ctx)
 
   ctx.effect(() => {

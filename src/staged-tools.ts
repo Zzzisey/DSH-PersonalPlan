@@ -200,7 +200,12 @@ export function createStagedPlannerTools(service: PlannerService) {
           }
           const result = service.advanceSchedule(session, args.proposal_id, revision, command)
           return result.status === 'ready_for_preview'
-            ? { status: result.status, proposal: ref(result.proposal), previewUrl: `/personal-planner?proposal=${encodeURIComponent(result.proposal.id)}&revision=${result.proposal.revision}&token=${encodeURIComponent(result.previewToken)}` }
+            ? {
+                status: result.status,
+                proposal: ref(result.proposal),
+                proposalPreview: { proposalId: result.proposal.id, token: result.previewToken },
+                next: '在 DSH 客户端选择“计划”标签查看预览并确认。',
+              }
             : result.status === 'revise_required'
               ? { status: result.status, proposal: ref(result.proposal), issues: issueValues(result.issues) }
               : { status: 'error', code: 'PROPOSAL_STAGE_MISMATCH' }
@@ -220,7 +225,16 @@ export function createStagedPlannerTools(service: PlannerService) {
       if (session === undefined || typeof args.proposal_id !== 'string') return { status: 'error', code: 'ARGUMENT_INVALID' }
       try {
         const proposal = service.getProposal(session, args.proposal_id)
-        return { status: 'ok', ...contextFor(proposal), ...(proposal.stage === 'ready' ? { previewUrl: `/personal-planner?proposal=${encodeURIComponent(proposal.id)}&revision=${proposal.revision}&token=${encodeURIComponent(service.issuePreviewToken(proposal))}` } : {}) }
+        return {
+          status: 'ok',
+          ...contextFor(proposal),
+          ...(proposal.stage === 'ready'
+            ? {
+                proposalPreview: { proposalId: proposal.id, token: service.issuePreviewToken(proposal) },
+                next: '在 DSH 客户端选择“计划”标签查看预览并确认。',
+              }
+            : {}),
+        }
       } catch (cause) { return error(cause) }
     },
   })
@@ -233,7 +247,7 @@ export function createStagedPlannerTools(service: PlannerService) {
     async execute(args: Record<string, unknown>, exec: ToolRunContext) {
       const session = owner(exec)
       if (session === undefined || typeof args.proposal_id !== 'string' || !Number.isInteger(args.expected_revision)) return { status: 'error', code: 'ARGUMENT_INVALID' }
-      try { return { status: 'discarded', proposal: ref(service.discardProposal(session, args.proposal_id, args.expected_revision as number)) } } catch (cause) { return error(cause) }
+      try { return { status: 'discarded', proposal: ref(service.discardProposal(session, args.proposal_id, args.expected_revision as number)), proposalPreview: null } } catch (cause) { return error(cause) }
     },
   })
 

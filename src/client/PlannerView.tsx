@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { getDay, getMonth, getProposalPreview, patchTasks, proposalAction, putCapacity, type Capacity, type DayData, type MonthData, type ProposalPreview, type PublicTask } from './api.js'
 import { addDays, dayLabel, loadColor, loadWidth, monthLabel, shiftMonth, todayStr, WEEKDAYS } from './format.js'
-import { proposalAccessFromUrl } from './proposal-model.js'
+import { proposalAccessKey, type ProposalAccess } from './proposal-model.js'
 
 const CARD: React.CSSProperties = {
   borderRadius: 12,
@@ -84,7 +84,7 @@ function CapacityEditor({ capacity, onSave, onCancel }: {
 /**
  * 计划面板：月网格 + 选中日清单 + 目标进度 + 容量编辑。
  */
-export function PlannerView(): React.ReactElement {
+export function PlannerView({ useProjection }: { useProjection: (key: 'plannerProposal') => ProposalAccess | null | undefined }): React.ReactElement {
   const today = useMemo(() => todayStr(), [])
   const [month, setMonth] = useState(() => today.slice(0, 7))
   const [monthData, setMonthData] = useState<MonthData | null>(null)
@@ -93,7 +93,11 @@ export function PlannerView(): React.ReactElement {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [editingCapacity, setEditingCapacity] = useState(false)
-  const [proposalAccess, setProposalAccess] = useState(() => proposalAccessFromUrl(window.location.search))
+  const projectedAccess = useProjection('plannerProposal')
+  const [dismissedAccess, setDismissedAccess] = useState<string | null>(null)
+  const proposalAccess = projectedAccess === undefined || projectedAccess === null || proposalAccessKey(projectedAccess) === dismissedAccess
+    ? null
+    : projectedAccess
   const [preview, setPreview] = useState<ProposalPreview | null>(null)
   const [proposalBusy, setProposalBusy] = useState(false)
 
@@ -120,9 +124,23 @@ export function PlannerView(): React.ReactElement {
   useEffect(() => { void loadDay(selected) }, [selected, loadDay])
   useEffect(() => {
     if (proposalAccess === null) { setPreview(null); return }
-    void getProposalPreview(proposalAccess.proposalId, proposalAccess.token, proposalAccess.revision, month)
-      .then((value) => { setPreview(value); setError(null) })
-      .catch((loadError: unknown) => { setPreview(null); setError(message(loadError)) })
+    let active = true
+    void getProposalPreview(proposalAccess.proposalId, proposalAccess.token, month)
+      .then((value) => {
+        if (!active) return
+        setPreview(value)
+        setError(null)
+      })
+      .catch((loadError: unknown) => {
+        if (!active) return
+        setPreview(null)
+        const reason = message(loadError)
+        setError(reason)
+        if (/^PROPOSAL_(?:NOT_READY|TOKEN_INVALID|STALE)$/.test(reason)) {
+          setDismissedAccess(proposalAccessKey(proposalAccess))
+        }
+      })
+    return () => { active = false }
   }, [month, proposalAccess])
 
   const refresh = useCallback(async () => {
@@ -184,20 +202,31 @@ export function PlannerView(): React.ReactElement {
   const previewAdded = preview?.diff.added.filter((task) => task.day === selected) ?? []
   const previewRemoved = preview?.diff.removed.filter((task) => task.day === selected) ?? []
   const finishProposal = useCallback(async (action: 'commit' | 'continue' | 'discard') => {
-    if (proposalAccess === null) return
+    if (proposalAccess === null || preview === null) return
     setProposalBusy(true)
     try {
-      await proposalAction(action, proposalAccess.proposalId, proposalAccess.token, proposalAccess.revision)
-      setProposalAccess(null)
+      await proposalAction(action, proposalAccess.proposalId, proposalAccess.token, preview.proposal.revision)
+      setDismissedAccess(proposalAccessKey(proposalAccess))
       setPreview(null)
-      window.history.replaceState(null, '', window.location.pathname)
       await refresh()
     } catch (actionError) {
-      setError(message(actionError))
+      const reason = message(actionError)
+      if (reason !== 'PROPOSAL_REVISION_CONFLICT') {
+        setError(reason)
+      } else {
+        try {
+          setPreview(await getProposalPreview(proposalAccess.proposalId, proposalAccess.token, month))
+          setError('提案已更新，请检查最新预览后重新确认。')
+        } catch (reloadError) {
+          setPreview(null)
+          setDismissedAccess(proposalAccessKey(proposalAccess))
+          setError(message(reloadError))
+        }
+      }
     } finally {
       setProposalBusy(false)
     }
-  }, [proposalAccess, refresh])
+  }, [month, preview, proposalAccess, refresh])
 
   return (
     <div style={{ padding: '20px 24px 40px', display: 'flex', flexDirection: 'column', gap: 12, color: 'var(--dsw-alias-label-primary)' }}>

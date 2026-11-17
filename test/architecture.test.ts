@@ -72,3 +72,17 @@ test('运行时只保留 db/repo.ts 数据访问对象，不保留 Repository �
   const entrySource = readFileSync(resolve('src/index.ts'), 'utf8')
   assert.match(entrySource, /new PlannerService\(createPlannerRepo\(db\)/)
 })
+
+test('Proposal 预览通过 DSH 会话投影进入客户端面板，不依赖页面 URL', () => {
+  const entrySource = readFileSync(resolve('src/index.ts'), 'utf8')
+  const toolSource = readFileSync(resolve('src/staged-tools.ts'), 'utf8')
+  const viewSource = readFileSync(resolve('src/client/PlannerView.tsx'), 'utf8')
+  const clientSource = readFileSync(resolve('src/client/index.tsx'), 'utf8')
+
+  assert.match(entrySource, /sessionProjections\.register\(proposalProjectionDefinition\)/)
+  assert.doesNotMatch(toolSource, /previewUrl/)
+  assert.doesNotMatch(viewSource, /window\.location|window\.history/)
+  assert.match(viewSource, /useProjection\('plannerProposal'\)/)
+  assert.match(clientSource, /conversation\.view/)
+  assert.match(clientSource, /conversation\.input\.dock/)
+})
