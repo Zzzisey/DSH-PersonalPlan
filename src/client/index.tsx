@@ -69,8 +69,8 @@ function PlannerBadge(): React.ReactElement {
  * @param ctx - 客户端上下文，`slots` 由 inject 保证可用。
  */
 export function apply(ctx: any): void {
-  ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register(
-    { name: 'conversation.composer.dock', id: 'planner', order: 20 },
+  ctx.slots.inject('conversation.input.dock', () => ctx.slots.register(
+    { name: 'conversation.input.dock', id: 'planner', order: 20 },
     PlannerBadge,
   ))
   ctx.slots.inject('conversation.view', () => ctx.slots.register(

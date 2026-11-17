@@ -7,6 +7,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import type {} from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createPlannerRoutes } from './api/routes.js'
@@ -16,6 +17,7 @@ import { createPlannerTools } from './tools.js'
 import type { Config } from './host/config.js'
 import { makeLegacyJudgeChat } from './host/legacy-llm.js'
 import { PlannerService } from './host/planner-service.js'
+import { proposalProjectionDefinition } from './host/proposal-projection.js'
 import { registerDegradedPrompt, registerLegacyPlannerPrompt, registerStagedPlannerPrompt } from './host/prompt.js'
 import { BUILD_ID, BUILD_REVISION, BUILD_VERSION } from './generated/build-info.js'
 
@@ -26,7 +28,7 @@ export type { Config, JudgeConfig } from './host/config.js'
  * 必需依赖。`systemPrompt` 用于降级告警——库坏了也要让用户在对话里看到原因。
  * 可选能力（将来如 `skills`）一律用 ctx.get 软探测，绝不写进这里。
  */
-export const inject = ['tools', 'webServer', 'systemPrompt']
+export const inject = ['tools', 'webServer', 'systemPrompt', 'sessionProjections']
 
 /** ping 的响应体；Client 徽章也读同一份。 */
 function ping(): { ok: boolean; version: string; revision: string; build: string; at: string } {
@@ -46,6 +48,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     registerDegradedPrompt(ctx, error)
     return
   }
+
+  ctx.sessionProjections.register(proposalProjectionDefinition)
 
   // 先登记关库：cordis 按注册逆序释放，所以它会最后执行，避免工具还在用时连接已关。
   ctx.effect(() => () => { db.close() }, 'planner: db')

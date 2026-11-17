@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { getDay, getMonth, getProposalPreview, patchTasks, proposalAction, putCapacity, type Capacity, type DayData, type MonthData, type ProposalPreview, type PublicTask } from './api.js'
 import { addDays, dayLabel, loadColor, loadWidth, monthLabel, shiftMonth, todayStr, WEEKDAYS } from './format.js'
-import { proposalAccessFromUrl } from './proposal-model.js'
+import { proposalAccessKey, type ProposalAccess } from './proposal-model.js'
 
 const CARD: React.CSSProperties = {
   borderRadius: 12,
@@ -84,7 +84,7 @@ function CapacityEditor({ capacity, onSave, onCancel }: {
 /**
  * 计划面板：月网格 + 选中日清单 + 目标进度 + 容量编辑。
  */
-export function PlannerView(): React.ReactElement {
+export function PlannerView({ useProjection }: { useProjection: (key: 'plannerProposal') => ProposalAccess | null | undefined }): React.ReactElement {
   const today = useMemo(() => todayStr(), [])
   const [month, setMonth] = useState(() => today.slice(0, 7))
   const [monthData, setMonthData] = useState<MonthData | null>(null)
@@ -93,7 +93,11 @@ export function PlannerView(): React.ReactElement {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [editingCapacity, setEditingCapacity] = useState(false)
-  const [proposalAccess, setProposalAccess] = useState(() => proposalAccessFromUrl(window.location.search))
+  const projectedAccess = useProjection('plannerProposal')
+  const [dismissedAccess, setDismissedAccess] = useState<string | null>(null)
+  const proposalAccess = projectedAccess === undefined || projectedAccess === null || proposalAccessKey(projectedAccess) === dismissedAccess
+    ? null
+    : projectedAccess
   const [preview, setPreview] = useState<ProposalPreview | null>(null)
   const [proposalBusy, setProposalBusy] = useState(false)
 
@@ -122,7 +126,14 @@ export function PlannerView(): React.ReactElement {
     if (proposalAccess === null) { setPreview(null); return }
     void getProposalPreview(proposalAccess.proposalId, proposalAccess.token, proposalAccess.revision, month)
       .then((value) => { setPreview(value); setError(null) })
-      .catch((loadError: unknown) => { setPreview(null); setError(message(loadError)) })
+      .catch((loadError: unknown) => {
+        setPreview(null)
+        const reason = message(loadError)
+        setError(reason)
+        if (/^PROPOSAL_(?:NOT_READY|REVISION_CONFLICT|TOKEN_INVALID|STALE)$/.test(reason)) {
+          setDismissedAccess(proposalAccessKey(proposalAccess))
+        }
+      })
   }, [month, proposalAccess])
 
   const refresh = useCallback(async () => {
@@ -188,9 +199,8 @@ export function PlannerView(): React.ReactElement {
     setProposalBusy(true)
     try {
       await proposalAction(action, proposalAccess.proposalId, proposalAccess.token, proposalAccess.revision)
-      setProposalAccess(null)
+      setDismissedAccess(proposalAccessKey(proposalAccess))
       setPreview(null)
-      window.history.replaceState(null, '', window.location.pathname)
       await refresh()
     } catch (actionError) {
       setError(message(actionError))
